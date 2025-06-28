@@ -67,20 +67,12 @@ export async function GET(request: NextRequest) {
       ),
       
       processing_status AS (
-        -- 処理状況を確認（将来的に実装予定のテーブル）
+        -- 処理状況：現在は全て未処理として扱う
         SELECT
           ts.stock_code,
           ts.trade_type,
-          CASE 
-            WHEN COUNT(*) > 0 THEN '済（対象あり）'
-            ELSE '未処理'
-          END as status
+          '未処理' as status
         FROM tomorrow_signals ts
-        LEFT JOIN \`kabu-376213.kabu2411.t01_trading_conditions\` tc
-          ON ts.stock_code = tc.stock_code 
-          AND ts.trade_type = tc.trade_type
-          AND tc.is_active = true
-        GROUP BY ts.stock_code, ts.trade_type
       )
       
       SELECT

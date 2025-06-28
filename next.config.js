@@ -1,10 +1,5 @@
- 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  experimental: {
-    // App Routerの最適化
-    appDir: true,
-  },
   // TypeScript厳密設定
   typescript: {
     ignoreBuildErrors: false,
