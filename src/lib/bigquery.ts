@@ -53,7 +53,7 @@ export class BigQueryClient {
         avg_trading_value_million,
         avg_intraday_volatility,
         volatility_decile
-      FROM \`${this.projectId}.${this.datasetId}.m03_trading_stock_master\`
+      FROM \`${this.projectId}.${this.datasetId}.master_trading_stocks\`
       ORDER BY stock_code
     `;
     
@@ -131,7 +131,7 @@ export class BigQueryClient {
             ELSE 'Sell'
           END as trade_type
         FROM \`${this.projectId}.${this.datasetId}.d01_signals_raw\` sr
-        INNER JOIN \`${this.projectId}.${this.datasetId}.m03_trading_stock_master\` tsm
+        INNER JOIN \`${this.projectId}.${this.datasetId}.master_trading_stocks\` tsm
           ON sr.stock_code = tsm.stock_code
         WHERE sr.signal_date = DATE_ADD(CURRENT_DATE('Asia/Tokyo'), INTERVAL 1 DAY)
           AND sr.signal_value IS NOT NULL

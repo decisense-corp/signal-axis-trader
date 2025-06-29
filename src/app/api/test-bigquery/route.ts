@@ -32,13 +32,13 @@ export async function GET(request: NextRequest) {
         -- 明日発生予定のシグナルを特定
         SELECT DISTINCT
           sr.stock_code,
-          tsm.stock_name,
+          tsm.company_name as stock_name,
           CASE 
             WHEN sr.signal_value > 0 THEN 'Buy'
             ELSE 'Sell'
           END as trade_type
         FROM \`kabu-376213.kabu2411.d01_signals_raw\` sr
-        INNER JOIN \`kabu-376213.kabu2411.m03_trading_stock_master\` tsm
+        INNER JOIN \`kabu-376213.kabu2411.master_trading_stocks\` tsm
           ON sr.stock_code = tsm.stock_code
         WHERE sr.signal_date = DATE_ADD(CURRENT_DATE('Asia/Tokyo'), INTERVAL 1 DAY)
           AND sr.signal_value IS NOT NULL
