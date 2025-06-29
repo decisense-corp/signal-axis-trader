@@ -8,7 +8,7 @@ interface TomorrowSignalCandidate {
   stock_name: string;
   trade_type: 'Buy' | 'Sell';
   max_win_rate: number;
-  max_expected_return: number;
+  max_expected_value: number;
   excellent_pattern_count: number;
   processing_status: string;
   total_samples: number;
@@ -16,16 +16,18 @@ interface TomorrowSignalCandidate {
   avg_expected_return: number;
 }
 
+interface Pagination {
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+}
+
 interface ApiResponse {
   success: boolean;
   data?: TomorrowSignalCandidate[];
   error?: string;
-  pagination?: {
-    total: number;
-    limit: number;
-    offset: number;
-    hasMore: boolean;
-  };
+  pagination?: Pagination;
   metadata?: {
     query_time: string;
     target_date: string;
@@ -37,22 +39,31 @@ export default function TomorrowSignalsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [metadata, setMetadata] = useState<any>(null);
+  const [pagination, setPagination] = useState<Pagination | null>(null);
+  
+  // ページネーション設定
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
 
   useEffect(() => {
     fetchSignals();
-  }, []);
+  }, [currentPage, pageSize]);
 
   const fetchSignals = async () => {
     try {
       setLoading(true);
       setError(null);
       
-      const response = await fetch('/api/signals/tomorrow');
+      const offset = (currentPage - 1) * pageSize;
+      const url = `/api/signals/tomorrow?limit=${pageSize}&offset=${offset}`;
+      
+      const response = await fetch(url);
       const data: ApiResponse = await response.json();
       
       if (data.success && data.data) {
         setSignals(data.data);
         setMetadata(data.metadata);
+        setPagination(data.pagination || null);
       } else {
         setError(data.error || 'データの取得に失敗しました');
       }
@@ -69,6 +80,8 @@ export default function TomorrowSignalsPage() {
     
     switch (status) {
       case '未処理':
+        return `${baseClasses} bg-yellow-100 text-yellow-800`;
+      case '未（対象あり）':
         return `${baseClasses} bg-yellow-100 text-yellow-800`;
       case '済（対象あり）':
         return `${baseClasses} bg-green-100 text-green-800`;
@@ -87,6 +100,22 @@ export default function TomorrowSignalsPage() {
     } else {
       return `${baseClasses} bg-red-100 text-red-800`;
     }
+  };
+
+  // ページネーション計算
+  const totalPages = pagination ? Math.ceil(pagination.total / pageSize) : 1;
+  const startRecord = pagination ? pagination.offset + 1 : 0;
+  const endRecord = pagination ? Math.min(pagination.offset + pageSize, pagination.total) : 0;
+
+  const handlePageChange = (newPage: number) => {
+    if (newPage >= 1 && newPage <= totalPages) {
+      setCurrentPage(newPage);
+    }
+  };
+
+  const handlePageSizeChange = (newSize: number) => {
+    setPageSize(newSize);
+    setCurrentPage(1); // ページサイズ変更時は1ページ目に戻る
   };
 
   if (loading) {
@@ -139,23 +168,47 @@ export default function TomorrowSignalsPage() {
           <h3 className="text-lg font-medium text-blue-900 mb-2">
             📅 明日のシグナル候補 ({metadata.target_date})
           </h3>
-          <p className="text-sm text-blue-700">
-            取得件数: <span className="font-medium">{signals.length}件</span>
-            {metadata.query_time && (
-              <span className="ml-4">
-                更新時刻: {new Date(metadata.query_time).toLocaleString('ja-JP')}
-              </span>
-            )}
-          </p>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-blue-700">
+              総件数: <span className="font-medium">{pagination?.total || 0}件</span>
+              {metadata.query_time && (
+                <span className="ml-4">
+                  更新時刻: {new Date(metadata.query_time).toLocaleString('ja-JP')}
+                </span>
+              )}
+            </p>
+            
+            {/* ページサイズ選択 */}
+            <div className="mt-2 sm:mt-0">
+              <label className="text-sm text-blue-700 mr-2">表示件数:</label>
+              <select 
+                value={pageSize} 
+                onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+                className="text-sm border border-blue-300 rounded px-2 py-1 bg-white"
+              >
+                <option value={25}>25件</option>
+                <option value={50}>50件</option>
+                <option value={100}>100件</option>
+                <option value={200}>200件</option>
+              </select>
+            </div>
+          </div>
         </div>
       )}
 
       {/* データテーブル */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-200">
-          <h3 className="text-lg font-medium text-gray-900">
-            シグナル候補一覧 (勝率・期待値良い順)
-          </h3>
+          <div className="flex justify-between items-center">
+            <h3 className="text-lg font-medium text-gray-900">
+              シグナル候補一覧 (勝率・期待値良い順)
+            </h3>
+            {pagination && (
+              <p className="text-sm text-gray-500">
+                {startRecord}〜{endRecord}件目 / 全{pagination.total}件
+              </p>
+            )}
+          </div>
         </div>
         
         {signals.length === 0 ? (
@@ -208,13 +261,13 @@ export default function TomorrowSignalsPage() {
                       </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                      {signal.max_win_rate.toFixed(1)}%
+                      {signal.max_win_rate?.toFixed(1) || '0.0'}%
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                      {signal.max_expected_return > 0 ? '+' : ''}{signal.max_expected_return.toFixed(1)}%
+                      {signal.max_expected_value > 0 ? '+' : ''}{signal.max_expected_value?.toFixed(1) || '0.0'}%
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                      {signal.excellent_pattern_count}個
+                      {signal.excellent_pattern_count || 0}個
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <span className={getStatusBadge(signal.processing_status)}>
@@ -239,6 +292,111 @@ export default function TomorrowSignalsPage() {
           </div>
         )}
       </div>
+
+      {/* ページネーションコントロール */}
+      {pagination && totalPages > 1 && (
+        <div className="bg-white px-4 py-3 flex items-center justify-between border-t border-gray-200 sm:px-6 rounded-lg shadow-sm border border-gray-200">
+          <div className="flex-1 flex justify-between sm:hidden">
+            {/* モバイル用シンプルナビゲーション */}
+            <button
+              onClick={() => handlePageChange(currentPage - 1)}
+              disabled={currentPage <= 1}
+              className="relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              前へ
+            </button>
+            <button
+              onClick={() => handlePageChange(currentPage + 1)}
+              disabled={currentPage >= totalPages}
+              className="ml-3 relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              次へ
+            </button>
+          </div>
+          
+          <div className="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm text-gray-700">
+                <span className="font-medium">{startRecord}</span>
+                〜
+                <span className="font-medium">{endRecord}</span>
+                件目 / 全
+                <span className="font-medium">{pagination.total}</span>
+                件
+              </p>
+            </div>
+            
+            <div>
+              <nav className="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">
+                {/* 最初のページ */}
+                <button
+                  onClick={() => handlePageChange(1)}
+                  disabled={currentPage <= 1}
+                  className="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  最初
+                </button>
+                
+                {/* 前のページ */}
+                <button
+                  onClick={() => handlePageChange(currentPage - 1)}
+                  disabled={currentPage <= 1}
+                  className="relative inline-flex items-center px-2 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clipRule="evenodd" />
+                  </svg>
+                </button>
+
+                {/* ページ番号 */}
+                {(() => {
+                  const pages = [];
+                  const startPage = Math.max(1, currentPage - 2);
+                  const endPage = Math.min(totalPages, currentPage + 2);
+                  
+                  for (let i = startPage; i <= endPage; i++) {
+                    pages.push(
+                      <button
+                        key={i}
+                        onClick={() => handlePageChange(i)}
+                        className={`relative inline-flex items-center px-4 py-2 border text-sm font-medium ${
+                          i === currentPage
+                            ? 'z-10 bg-blue-50 border-blue-500 text-blue-600'
+                            : 'bg-white border-gray-300 text-gray-500 hover:bg-gray-50'
+                        }`}
+                      >
+                        {i}
+                      </button>
+                    );
+                  }
+                  
+                  return pages;
+                })()}
+
+                {/* 次のページ */}
+                <button
+                  onClick={() => handlePageChange(currentPage + 1)}
+                  disabled={currentPage >= totalPages}
+                  className="relative inline-flex items-center px-2 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
+                  </svg>
+                </button>
+                
+                {/* 最後のページ */}
+                <button
+                  onClick={() => handlePageChange(totalPages)}
+                  disabled={currentPage >= totalPages}
+                  className="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  最後
+                </button>
+              </nav>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
