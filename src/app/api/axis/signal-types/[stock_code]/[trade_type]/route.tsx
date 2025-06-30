@@ -19,16 +19,17 @@ interface SignalTypeDetail {
   best_bin_samples: number;
 }
 
-interface RouteParams {
-  params: {
+interface RouteContext {
+  params: Promise<{
     stock_code: string;
     trade_type: string;
-  };
+  }>;
 }
 
-export async function GET(request: NextRequest, context: RouteParams) {
+export async function GET(request: NextRequest, context: RouteContext) {
   try {
-    const { stock_code, trade_type } = context.params;
+    // Next.js 15: paramsはPromiseなのでawaitが必要
+    const { stock_code, trade_type } = await context.params;
     
     console.log(`🔍 4軸シグナルタイプ取得: ${stock_code} ${trade_type} ...`);
     
@@ -40,10 +41,12 @@ export async function GET(request: NextRequest, context: RouteParams) {
       }, { status: 400 });
     }
     
-    if (!['Buy', 'Sell'].includes(trade_type)) {
+    // trade_typeの正規化（BUY/SELLに統一）
+    const normalizedTradeType = trade_type.toUpperCase();
+    if (!['BUY', 'SELL'].includes(normalizedTradeType)) {
       return NextResponse.json({
         success: false,
-        error: 'trade_type は Buy または Sell である必要があります'
+        error: 'trade_type は BUY または SELL である必要があります'
       }, { status: 400 });
     }
 
@@ -61,7 +64,7 @@ export async function GET(request: NextRequest, context: RouteParams) {
           total_signals as samples
         FROM \`kabu-376213.kabu2411.d30_learning_period_snapshot\` 
         WHERE stock_code = '${stock_code}'
-          AND trade_type = '${trade_type}'
+          AND trade_type = '${normalizedTradeType}'
           AND win_rate >= 55.0
           AND avg_profit_rate >= 0.5
           AND total_signals >= 10  -- 最低サンプル数
@@ -118,30 +121,30 @@ export async function GET(request: NextRequest, context: RouteParams) {
       signal_type: row.signal_type,
       signal_category: row.signal_category,
       description: row.description,
-      excellent_bins: row.excellent_bins,
-      max_win_rate: row.max_win_rate,
-      max_expected_value: row.max_expected_value,
-      total_excellent_patterns: row.total_excellent_patterns,
-      avg_win_rate: row.avg_win_rate,
-      avg_expected_value: row.avg_expected_value,
-      total_samples: row.total_samples,
-      best_bin: row.best_bin,
-      best_bin_win_rate: row.best_bin_win_rate,
-      best_bin_expected_value: row.best_bin_expected_value,
-      best_bin_samples: row.best_bin_samples,
+      excellent_bins: row.excellent_bins || [],
+      max_win_rate: row.max_win_rate || 0,
+      max_expected_value: row.max_expected_value || 0,
+      total_excellent_patterns: row.total_excellent_patterns || 0,
+      avg_win_rate: row.avg_win_rate || 0,
+      avg_expected_value: row.avg_expected_value || 0,
+      total_samples: row.total_samples || 0,
+      best_bin: row.best_bin || 0,
+      best_bin_win_rate: row.best_bin_win_rate || 0,
+      best_bin_expected_value: row.best_bin_expected_value || 0,
+      best_bin_samples: row.best_bin_samples || 0,
     }));
 
-    console.log(`✅ ${stock_code} ${trade_type} のシグナルタイプ ${signalTypes.length}件を取得`);
+    console.log(`✅ ${stock_code} ${normalizedTradeType} のシグナルタイプ ${signalTypes.length}件を取得`);
 
     return NextResponse.json({
       success: true,
       data: signalTypes,
       metadata: {
         stock_code,
-        trade_type,
+        trade_type: normalizedTradeType,
         signal_types_count: signalTypes.length,
         query_time: new Date().toISOString(),
-        description: `4軸分析: ${stock_code} ${trade_type} の優秀シグナルタイプ一覧`
+        description: `4軸分析: ${stock_code} ${normalizedTradeType} の優秀シグナルタイプ一覧`
       }
     });
 
