@@ -104,9 +104,9 @@ export default function ConfigPage({ params }: PageProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   
-  // フィルタ条件
-  const [profitTargetYen, setProfitTargetYen] = useState<number>(100);
-  const [lossCutYen, setLossCutYen] = useState<number>(100);
+  // 🔧 修正: フィルタ条件の初期値を0に変更（寄り引けモード）
+  const [profitTargetYen, setProfitTargetYen] = useState<number>(0);  // 100 → 0
+  const [lossCutYen, setLossCutYen] = useState<number>(0);            // 100 → 0
   const [prevCloseGapCondition, setPrevCloseGapCondition] = useState<'all' | 'above' | 'below'>('all');
   const [prevCloseGapThreshold, setPrevCloseGapThreshold] = useState<number>(0);
   
@@ -171,6 +171,7 @@ export default function ConfigPage({ params }: PageProps) {
       setError(null);
       
       const queryParams = new URLSearchParams();
+      // 🔧 修正: 0より大きい場合のみパラメータ追加
       if (profitTargetYen > 0) queryParams.set('profit_target_yen', profitTargetYen.toString());
       if (lossCutYen > 0) queryParams.set('loss_cut_yen', lossCutYen.toString());
       if (prevCloseGapCondition !== 'all') {
@@ -197,6 +198,19 @@ export default function ConfigPage({ params }: PageProps) {
     }
   };
 
+  // 🔧 修正: 設定状態を取得する関数
+  const getCurrentSettingDescription = () => {
+    if (profitTargetYen === 0 && lossCutYen === 0) {
+      return "純粋な寄り引け取引";
+    } else if (profitTargetYen > 0 && lossCutYen === 0) {
+      return `利確${profitTargetYen}円のみ設定`;
+    } else if (profitTargetYen === 0 && lossCutYen > 0) {
+      return `損切${lossCutYen}円のみ設定`;
+    } else {
+      return `利確${profitTargetYen}円・損切${lossCutYen}円`;
+    }
+  };
+
   const handleSaveConfig = async () => {
     if (!pageParams) return;
     
@@ -208,7 +222,7 @@ export default function ConfigPage({ params }: PageProps) {
         loss_cut_yen: lossCutYen,
         prev_close_gap_condition: prevCloseGapCondition,
         prev_close_gap_threshold: prevCloseGapThreshold,
-        additional_notes: `学習期間での条件最適化: 利確${profitTargetYen}円, 損切${lossCutYen}円`
+        additional_notes: `学習期間での条件最適化: ${getCurrentSettingDescription()}`
       };
       
       const response = await fetch(
@@ -362,31 +376,39 @@ export default function ConfigPage({ params }: PageProps) {
         </div>
       </div>
 
-      {/* フィルタ条件設定（最上部・コンパクト） */}
+      {/* 🔧 修正: フィルタ条件設定（初期値0・呼び値対応） */}
       <div className="bg-white rounded-lg border border-gray-200 p-3">
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
           <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">利確目標（円）</label>
+            <label className="block text-xs font-medium text-gray-700 mb-1">
+              利確目標（円）
+              <span className="text-gray-500 ml-1">※0=設定なし</span>
+            </label>
             <input
               type="number"
-              min="10"
+              min="0"        // 🔧 修正: 最小値を0に
               max="1000"
-              step="10"
+              step="1"       // 🔧 修正: 1円刻みに変更
               value={profitTargetYen}
-              onChange={(e) => setProfitTargetYen(parseInt(e.target.value) || 100)}
+              onChange={(e) => setProfitTargetYen(parseInt(e.target.value) || 0)}  // 🔧 修正: デフォルト0
+              placeholder="0"
               className="w-full px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
             />
           </div>
           
           <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">損切設定（円）</label>
+            <label className="block text-xs font-medium text-gray-700 mb-1">
+              損切設定（円）
+              <span className="text-gray-500 ml-1">※0=設定なし</span>
+            </label>
             <input
               type="number"
-              min="10"
+              min="0"        // 🔧 修正: 最小値を0に
               max="1000"
-              step="10"
+              step="1"       // 🔧 修正: 1円刻みに変更
               value={lossCutYen}
-              onChange={(e) => setLossCutYen(parseInt(e.target.value) || 100)}
+              onChange={(e) => setLossCutYen(parseInt(e.target.value) || 0)}      // 🔧 修正: デフォルト0
+              placeholder="0"
               className="w-full px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
             />
           </div>
@@ -418,6 +440,12 @@ export default function ConfigPage({ params }: PageProps) {
               />
             </div>
           )}
+        </div>
+        
+        {/* 🔧 追加: 現在の設定状態を表示 */}
+        <div className="mt-2 p-2 bg-blue-50 rounded text-xs">
+          <strong className="text-blue-900">現在の設定:</strong> 
+          <span className="text-blue-700 ml-1">{getCurrentSettingDescription()}</span>
         </div>
       </div>
 
@@ -602,11 +630,11 @@ export default function ConfigPage({ params }: PageProps) {
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
                     {configData.learning_data.slice(0, 20).map((row, index) => {
-                      // 価格変動率の計算
-                      const gapRate = row.prev_close ? ((row.day_open - row.prev_close) / row.prev_close * 100) : 0;
-                      const openToHighRate = row.day_open ? ((row.day_high - row.day_open) / row.day_open * 100) : 0;
-                      const openToLowRate = row.day_open ? ((row.day_low - row.day_open) / row.day_open * 100) : 0;
-                      const openToCloseRate = row.day_open ? ((row.day_close - row.day_open) / row.day_open * 100) : 0;
+                      // 値幅計算（円単位）
+                      const gapRange = row.prev_close ? (row.day_open - row.prev_close) : 0;
+                      const openToHighRange = row.day_open ? (row.day_high - row.day_open) : 0;
+                      const openToLowRange = row.day_open ? (row.day_low - row.day_open) : 0;
+                      const openToCloseRange = row.day_open ? (row.day_close - row.day_open) : 0;
                       
                       return (
                         <tr key={index} className="hover:bg-gray-50">
@@ -629,23 +657,23 @@ export default function ConfigPage({ params }: PageProps) {
                             ¥{row.day_close?.toLocaleString() || 'N/A'}
                           </td>
                           <td className="px-2 py-2 text-right">
-                            <span className={gapRate >= 0 ? 'text-green-600' : 'text-red-600'}>
-                              {gapRate >= 0 ? '+' : ''}{gapRate.toFixed(1)}%
+                            <span className={gapRange >= 0 ? 'text-green-600' : 'text-red-600'}>
+                              {gapRange >= 0 ? '+' : ''}¥{gapRange.toFixed(0)}
                             </span>
                           </td>
                           <td className="px-2 py-2 text-right">
-                            <span className={openToHighRate >= 0 ? 'text-green-600' : 'text-red-600'}>
-                              {openToHighRate >= 0 ? '+' : ''}{openToHighRate.toFixed(1)}%
+                            <span className={openToHighRange >= 0 ? 'text-green-600' : 'text-red-600'}>
+                              {openToHighRange >= 0 ? '+' : ''}¥{openToHighRange.toFixed(0)}
                             </span>
                           </td>
                           <td className="px-2 py-2 text-right">
-                            <span className={openToLowRate >= 0 ? 'text-green-600' : 'text-red-600'}>
-                              {openToLowRate >= 0 ? '+' : ''}{openToLowRate.toFixed(1)}%
+                            <span className={openToLowRange >= 0 ? 'text-green-600' : 'text-red-600'}>
+                              {openToLowRange >= 0 ? '+' : ''}¥{openToLowRange.toFixed(0)}
                             </span>
                           </td>
                           <td className="px-2 py-2 text-right">
-                            <span className={openToCloseRate >= 0 ? 'text-green-600' : 'text-red-600'}>
-                              {openToCloseRate >= 0 ? '+' : ''}{openToCloseRate.toFixed(1)}%
+                            <span className={openToCloseRange >= 0 ? 'text-green-600' : 'text-red-600'}>
+                              {openToCloseRange >= 0 ? '+' : ''}¥{openToCloseRange.toFixed(0)}
                             </span>
                           </td>
                           <td className="px-2 py-2 text-right">

@@ -141,7 +141,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
           LAG(dq.Close) OVER (PARTITION BY bsr.stock_code ORDER BY bsr.signal_date) as prev_close
         FROM \`kabu-376213.kabu2411.d20_basic_signal_results\` bsr
         LEFT JOIN \`kabu-376213.kabu2411.daily_quotes\` dq
-          ON bsr.stock_code = dq.Code
+          ON CONCAT(bsr.stock_code, '0') = dq.Code  -- 🔧 修正: 末尾0を追加してJOIN
           AND bsr.signal_date = dq.Date
         WHERE bsr.signal_type = '${signal_type}'
           AND bsr.signal_bin = ${binNumber}
