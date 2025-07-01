@@ -2,6 +2,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 
 interface TomorrowSignalCandidate {
   stock_code: string;
@@ -35,6 +36,7 @@ interface ApiResponse {
 }
 
 export default function TomorrowSignalsPage() {
+  const router = useRouter();
   const [signals, setSignals] = useState<TomorrowSignalCandidate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -116,6 +118,10 @@ export default function TomorrowSignalsPage() {
   const handlePageSizeChange = (newSize: number) => {
     setPageSize(newSize);
     setCurrentPage(1); // ページサイズ変更時は1ページ目に戻る
+  };
+
+  const handleConfigClick = (signal: TomorrowSignalCandidate) => {
+    router.push(`/signals/tomorrow/${signal.stock_code}/${signal.trade_type}`);
   };
 
   if (loading) {
@@ -276,11 +282,8 @@ export default function TomorrowSignalsPage() {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                       <button
-                        className="text-blue-600 hover:text-blue-900"
-                        onClick={() => {
-                          // TODO: 個別設定画面への遷移
-                          alert(`${signal.stock_code} (${signal.trade_type}) の設定画面に遷移`);
-                        }}
+                        className="text-blue-600 hover:text-blue-900 transition-colors"
+                        onClick={() => handleConfigClick(signal)}
                       >
                         設定
                       </button>
