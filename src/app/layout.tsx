@@ -15,30 +15,31 @@ export default function RootLayout({
   return (
     <html lang="ja">
       <body className="bg-gray-50 text-gray-900">
-        <header className="bg-white shadow-sm border-b">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="flex justify-between items-center h-16">
+        {/* 最小限ヘッダー */}
+        <header className="bg-white border-b border-gray-200">
+          <div className="max-w-7xl mx-auto px-4">
+            <div className="flex justify-between items-center h-10">
               <div className="flex items-center">
-                <h1 className="text-xl font-semibold text-gray-900">
+                <h1 className="text-sm font-medium text-gray-900">
                   Signal Axis Trader
                 </h1>
               </div>
-              <nav className="flex space-x-4">
+              <nav className="flex space-x-2">
                 <a
                   href="/signals/tomorrow"
-                  className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium"
+                  className="text-gray-600 hover:text-gray-900 px-2 py-1 text-xs font-medium"
                 >
                   明日のシグナル
                 </a>
                 <a
                   href="/signals/unprocessed"
-                  className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium"
+                  className="text-gray-600 hover:text-gray-900 px-2 py-1 text-xs font-medium"
                 >
                   未処理4軸
                 </a>
                 <a
                   href="/signals/review"
-                  className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium"
+                  className="text-gray-600 hover:text-gray-900 px-2 py-1 text-xs font-medium"
                 >
                   振り返り
                 </a>
@@ -46,7 +47,9 @@ export default function RootLayout({
             </div>
           </div>
         </header>
-        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        
+        {/* メインコンテンツ */}
+        <main className="max-w-7xl mx-auto px-4 py-3">
           {children}
         </main>
       </body>

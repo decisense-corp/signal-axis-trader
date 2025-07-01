@@ -78,7 +78,7 @@ export default function TomorrowSignalsPage() {
   };
 
   const getStatusBadge = (status: string) => {
-    const baseClasses = "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium";
+    const baseClasses = "inline-flex items-center px-1 py-0.5 rounded text-xs font-medium";
     
     switch (status) {
       case '未処理':
@@ -95,7 +95,7 @@ export default function TomorrowSignalsPage() {
   };
 
   const getTradeTypeBadge = (tradeType: 'BUY' | 'SELL') => {
-    const baseClasses = "inline-flex items-center px-2 py-1 rounded text-xs font-medium";
+    const baseClasses = "inline-flex items-center px-1 py-0.5 rounded text-xs font-medium";
     
     if (tradeType === 'BUY') {
       return `${baseClasses} bg-blue-100 text-blue-800`;
@@ -167,56 +167,63 @@ export default function TomorrowSignalsPage() {
   }
 
   return (
-    <div className="space-y-6">
-      {/* サマリー情報 */}
-      {metadata && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-          <h3 className="text-lg font-medium text-blue-900 mb-2">
-            📅 明日のシグナル候補 ({metadata.target_date})
-          </h3>
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-sm text-blue-700">
-              総件数: <span className="font-medium">{pagination?.total || 0}件</span>
-              {metadata.query_time && (
-                <span className="ml-4">
-                  更新時刻: {new Date(metadata.query_time).toLocaleString('ja-JP')}
-                </span>
+    <div className="space-y-3">
+      {/* パンくずナビ + 情報バー（コンパクト） */}
+      <div className="sticky top-0 z-20 bg-white border-b border-gray-200 shadow-sm">
+        <div className="px-4 py-2">
+          {/* パンくずリスト */}
+          <nav className="flex items-center space-x-2 text-sm text-gray-500 mb-2">
+            <span className="text-gray-900 font-medium">明日のシグナル</span>
+          </nav>
+          
+          {/* 情報 + コントロール */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3 text-sm">
+              {metadata && (
+                <>
+                  <span className="font-medium text-gray-900">{metadata.target_date}</span>
+                  <span className="text-gray-600">|</span>
+                  <span className="text-gray-600">{pagination?.total || 0}件</span>
+                  {metadata.query_time && (
+                    <>
+                      <span className="text-gray-600">|</span>
+                      <span className="text-gray-600">
+                        更新: {new Date(metadata.query_time).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </>
+                  )}
+                </>
               )}
-            </p>
+            </div>
             
             {/* ページサイズ選択 */}
-            <div className="mt-2 sm:mt-0">
-              <label className="text-sm text-blue-700 mr-2">表示件数:</label>
+            <div className="flex items-center space-x-2">
+              <label className="text-sm text-gray-600">表示:</label>
               <select 
                 value={pageSize} 
                 onChange={(e) => handlePageSizeChange(Number(e.target.value))}
-                className="text-sm border border-blue-300 rounded px-2 py-1 bg-white"
+                className="text-sm border border-gray-300 rounded px-2 py-1 bg-white"
               >
-                <option value={25}>25件</option>
-                <option value={50}>50件</option>
-                <option value={100}>100件</option>
-                <option value={200}>200件</option>
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+                <option value={200}>200</option>
               </select>
+              {pagination && totalPages > 1 && (
+                <>
+                  <span className="text-gray-600">|</span>
+                  <span className="text-sm text-gray-600">
+                    {startRecord}〜{endRecord} / {pagination.total}
+                  </span>
+                </>
+              )}
             </div>
           </div>
         </div>
-      )}
+      </div>
 
-      {/* データテーブル */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-200">
-          <div className="flex justify-between items-center">
-            <h3 className="text-lg font-medium text-gray-900">
-              シグナル候補一覧 (勝率・期待値良い順)
-            </h3>
-            {pagination && (
-              <p className="text-sm text-gray-500">
-                {startRecord}〜{endRecord}件目 / 全{pagination.total}件
-              </p>
-            )}
-          </div>
-        </div>
-        
+      {/* データテーブル（コンパクト） */}
+      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
         {signals.length === 0 ? (
           <div className="px-6 py-8 text-center">
             <p className="text-gray-500">明日のシグナル候補がありません</p>
@@ -226,61 +233,45 @@ export default function TomorrowSignalsPage() {
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    銘柄コード
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    銘柄名
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    売買
-                  </th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    最高勝率
-                  </th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    最高期待値
-                  </th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    優秀パターン数
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    処理状況
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    アクション
-                  </th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">コード</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">銘柄名</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">売買</th>
+                  <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">最高勝率</th>
+                  <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">最高期待値</th>
+                  <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">優秀数</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">状況</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">アクション</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {signals.map((signal, index) => (
                   <tr key={`${signal.stock_code}-${signal.trade_type}`} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                    <td className="px-3 py-2 whitespace-nowrap text-sm font-medium text-gray-900">
                       {signal.stock_code}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                    <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-900">
                       {signal.stock_name}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    <td className="px-3 py-2 whitespace-nowrap">
                       <span className={getTradeTypeBadge(signal.trade_type)}>
                         {signal.trade_type}
                       </span>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
+                    <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-900 text-right">
                       {signal.max_win_rate?.toFixed(1) || '0.0'}%
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
+                    <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-900 text-right">
                       {signal.max_expected_value > 0 ? '+' : ''}{signal.max_expected_value?.toFixed(1) || '0.0'}%
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
+                    <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-900 text-right">
                       {signal.excellent_pattern_count || 0}個
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    <td className="px-3 py-2 whitespace-nowrap">
                       <span className={getStatusBadge(signal.processing_status)}>
                         {signal.processing_status}
                       </span>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                    <td className="px-3 py-2 whitespace-nowrap text-sm font-medium">
                       <button
                         className="text-blue-600 hover:text-blue-900 transition-colors"
                         onClick={() => handleConfigClick(signal)}
@@ -296,106 +287,93 @@ export default function TomorrowSignalsPage() {
         )}
       </div>
 
-      {/* ページネーションコントロール */}
+      {/* ページネーション（コンパクト） */}
       {pagination && totalPages > 1 && (
-        <div className="bg-white px-4 py-3 flex items-center justify-between border-t border-gray-200 sm:px-6 rounded-lg shadow-sm border border-gray-200">
-          <div className="flex-1 flex justify-between sm:hidden">
+        <div className="bg-white border border-gray-200 rounded-lg px-3 py-2">
+          <div className="flex items-center justify-between">
             {/* モバイル用シンプルナビゲーション */}
-            <button
-              onClick={() => handlePageChange(currentPage - 1)}
-              disabled={currentPage <= 1}
-              className="relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              前へ
-            </button>
-            <button
-              onClick={() => handlePageChange(currentPage + 1)}
-              disabled={currentPage >= totalPages}
-              className="ml-3 relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              次へ
-            </button>
-          </div>
-          
-          <div className="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
-            <div>
-              <p className="text-sm text-gray-700">
-                <span className="font-medium">{startRecord}</span>
-                〜
-                <span className="font-medium">{endRecord}</span>
-                件目 / 全
-                <span className="font-medium">{pagination.total}</span>
-                件
-              </p>
+            <div className="flex sm:hidden">
+              <button
+                onClick={() => handlePageChange(currentPage - 1)}
+                disabled={currentPage <= 1}
+                className="px-3 py-1 border border-gray-300 text-sm rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                前
+              </button>
+              <span className="mx-2 text-sm text-gray-700">{currentPage}/{totalPages}</span>
+              <button
+                onClick={() => handlePageChange(currentPage + 1)}
+                disabled={currentPage >= totalPages}
+                className="px-3 py-1 border border-gray-300 text-sm rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                次
+              </button>
             </div>
             
-            <div>
-              <nav className="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">
-                {/* 最初のページ */}
-                <button
-                  onClick={() => handlePageChange(1)}
-                  disabled={currentPage <= 1}
-                  className="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  最初
-                </button>
-                
-                {/* 前のページ */}
-                <button
-                  onClick={() => handlePageChange(currentPage - 1)}
-                  disabled={currentPage <= 1}
-                  className="relative inline-flex items-center px-2 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clipRule="evenodd" />
-                  </svg>
-                </button>
+            {/* PC用詳細ナビゲーション */}
+            <div className="hidden sm:flex items-center space-x-1">
+              <button
+                onClick={() => handlePageChange(1)}
+                disabled={currentPage <= 1}
+                className="px-2 py-1 border border-gray-300 bg-white text-sm text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed rounded-l"
+              >
+                最初
+              </button>
+              
+              <button
+                onClick={() => handlePageChange(currentPage - 1)}
+                disabled={currentPage <= 1}
+                className="px-2 py-1 border border-gray-300 bg-white text-sm text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                ←
+              </button>
 
-                {/* ページ番号 */}
-                {(() => {
-                  const pages = [];
-                  const startPage = Math.max(1, currentPage - 2);
-                  const endPage = Math.min(totalPages, currentPage + 2);
-                  
-                  for (let i = startPage; i <= endPage; i++) {
-                    pages.push(
-                      <button
-                        key={i}
-                        onClick={() => handlePageChange(i)}
-                        className={`relative inline-flex items-center px-4 py-2 border text-sm font-medium ${
-                          i === currentPage
-                            ? 'z-10 bg-blue-50 border-blue-500 text-blue-600'
-                            : 'bg-white border-gray-300 text-gray-500 hover:bg-gray-50'
-                        }`}
-                      >
-                        {i}
-                      </button>
-                    );
-                  }
-                  
-                  return pages;
-                })()}
-
-                {/* 次のページ */}
-                <button
-                  onClick={() => handlePageChange(currentPage + 1)}
-                  disabled={currentPage >= totalPages}
-                  className="relative inline-flex items-center px-2 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
-                  </svg>
-                </button>
+              {/* ページ番号（コンパクト） */}
+              {(() => {
+                const pages = [];
+                const startPage = Math.max(1, currentPage - 2);
+                const endPage = Math.min(totalPages, currentPage + 2);
                 
-                {/* 最後のページ */}
-                <button
-                  onClick={() => handlePageChange(totalPages)}
-                  disabled={currentPage >= totalPages}
-                  className="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  最後
-                </button>
-              </nav>
+                for (let i = startPage; i <= endPage; i++) {
+                  pages.push(
+                    <button
+                      key={i}
+                      onClick={() => handlePageChange(i)}
+                      className={`px-2 py-1 border text-sm ${
+                        i === currentPage
+                          ? 'bg-blue-50 border-blue-500 text-blue-600'
+                          : 'bg-white border-gray-300 text-gray-500 hover:bg-gray-50'
+                      }`}
+                    >
+                      {i}
+                    </button>
+                  );
+                }
+                
+                return pages;
+              })()}
+
+              <button
+                onClick={() => handlePageChange(currentPage + 1)}
+                disabled={currentPage >= totalPages}
+                className="px-2 py-1 border border-gray-300 bg-white text-sm text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                →
+              </button>
+              
+              <button
+                onClick={() => handlePageChange(totalPages)}
+                disabled={currentPage >= totalPages}
+                className="px-2 py-1 border border-gray-300 bg-white text-sm text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed rounded-r"
+              >
+                最後
+              </button>
+            </div>
+
+            <div className="hidden sm:block">
+              <span className="text-sm text-gray-700">
+                ページ {currentPage} / {totalPages}
+              </span>
             </div>
           </div>
         </div>

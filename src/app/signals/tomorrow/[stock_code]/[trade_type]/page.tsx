@@ -158,23 +158,28 @@ export default function BinSelectionPage({ params }: PageProps) {
     return data ? createSelectedBinsList(data) : [];
   };
 
-  const handleStartConfiguration = () => {
+  const handleStartConfig = () => {
     const selectedList = getSelectedBinsList();
     if (selectedList.length === 0) {
       alert('bin を選択してください');
       return;
     }
     
+    // 最初のbinを取得
     const first = selectedList[0];
     if (!first) {
       alert('選択されたbinが見つかりません');
       return;
     }
     
-    const configUrl = `/signals/tomorrow/${stockCode}/${tradeType}/config/${first.signal_type}/${first.bin}`;
-    
-    sessionStorage.setItem('selectedBins', JSON.stringify(selectedList));
+    // sessionStorageに選択したbinと進行状況を保存
+    // 条件設定画面で使用するために、bin番号のみの配列に変換
+    const binNumbers = selectedList.map(item => item.bin);
+    sessionStorage.setItem('selectedBins', JSON.stringify(binNumbers));
     sessionStorage.setItem('currentBinIndex', '0');
+    
+    // 最初のbinの条件設定画面に遷移
+    const configUrl = `/signals/tomorrow/${stockCode}/${tradeType}/config/${first.signal_type}/${first.bin}`;
     
     router.push(configUrl);
   };
@@ -250,37 +255,51 @@ export default function BinSelectionPage({ params }: PageProps) {
   const activeSignalType = data.signal_types.find(st => st.signal_type === activeTab);
 
   return (
-    <div className="space-y-6">
-      {/* ヘッダー */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">📊 bin選択</h1>
-            <p className="text-gray-600 mt-1">
-              {data.stock_code} {data.stock_name} ({data.trade_type}) - {data.target_date}
-            </p>
-            <p className="text-sm text-blue-600 mt-1">
-              明日発火するシグナルタイプ: {data.signal_types.length}個
-            </p>
+    <div className="space-y-3">
+      {/* パンくずナビ + 最小限ヘッダー */}
+      <div className="sticky top-0 z-20 bg-white border-b border-gray-200 shadow-sm">
+        <div className="px-4 py-2">
+          {/* パンくずリスト */}
+          <nav className="flex items-center space-x-2 text-sm text-gray-500 mb-2">
+            <a href="/signals/tomorrow" className="hover:text-gray-700">明日のシグナル</a>
+            <span>›</span>
+            <span className="text-gray-900 font-medium">bin選択</span>
+          </nav>
+          
+          {/* 銘柄情報 + アクション */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <span className="font-medium text-gray-900">{data.stock_code}</span>
+              <span className="text-gray-600">|</span>
+              <span className="text-gray-600">{data.stock_name}</span>
+              <span className="text-gray-600">|</span>
+              <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                data.trade_type === 'BUY' ? 'bg-blue-100 text-blue-800' : 'bg-red-100 text-red-800'
+              }`}>
+                {data.trade_type}
+              </span>
+              <span className="text-gray-600">|</span>
+              <span className="text-sm text-blue-600">{data.signal_types.length}個のシグナルタイプ</span>
+            </div>
+            <button
+              onClick={() => router.push('/signals/tomorrow')}
+              className="px-3 py-1 text-gray-600 bg-gray-100 rounded text-sm hover:bg-gray-200"
+            >
+              ← 戻る
+            </button>
           </div>
-          <button
-            onClick={() => router.push('/signals/tomorrow')}
-            className="px-4 py-2 text-gray-600 bg-gray-100 rounded-md hover:bg-gray-200"
-          >
-            ← 一覧に戻る
-          </button>
         </div>
       </div>
 
-      {/* シグナルタイプタブ（固定ヘッダー） */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 sticky top-0 z-10">
+      {/* シグナルタイプタブ（コンパクト） */}
+      <div className="bg-white rounded-lg border border-gray-200 sticky top-16 z-10">
         <div className="border-b border-gray-200">
-          <nav className="-mb-px flex space-x-8 px-6">
+          <nav className="-mb-px flex space-x-4 px-4">
             {data.signal_types.map((signalType) => (
               <button
                 key={signalType.signal_type}
                 onClick={() => setActiveTab(signalType.signal_type)}
-                className={`py-4 px-1 border-b-2 font-medium text-sm ${
+                className={`py-2 px-1 border-b-2 font-medium text-sm ${
                   activeTab === signalType.signal_type
                     ? 'border-blue-500 text-blue-600'
                     : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
@@ -288,7 +307,7 @@ export default function BinSelectionPage({ params }: PageProps) {
               >
                 {signalType.signal_type}
                 {signalType.tomorrow_bins.length > 0 && (
-                  <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                  <span className="ml-1 inline-flex items-center px-1 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">
                     ★{signalType.tomorrow_bins.length}
                   </span>
                 )}
@@ -300,47 +319,29 @@ export default function BinSelectionPage({ params }: PageProps) {
         {/* bin選択エリア */}
         {activeSignalType && (
           <div>
-            {/* シグナルタイプ情報（コンパクト） */}
-            <div className="px-6 py-3 bg-gray-50 border-b border-gray-200">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-3">
-                  <h3 className="text-lg font-semibold text-gray-900">
-                    {activeSignalType.signal_type}
-                  </h3>
-                  <span className="text-sm text-gray-600">
-                    {activeSignalType.description}
-                  </span>
-                  <span className="text-sm text-blue-600 font-medium">
-                    明日発火: Bin {activeSignalType.tomorrow_bins.join(', ')}
-                  </span>
-                </div>
+            {/* シグナルタイプ情報（1行・コンパクト） */}
+            <div className="px-4 py-2 bg-gray-50 border-b border-gray-200">
+              <div className="flex items-center space-x-3 text-sm">
+                <span className="font-medium text-gray-900">{activeSignalType.signal_type}</span>
+                <span className="text-gray-600">|</span>
+                <span className="text-gray-600">{activeSignalType.description}</span>
+                <span className="text-gray-600">|</span>
+                <span className="text-blue-600 font-medium">明日発火: Bin {activeSignalType.tomorrow_bins.join(', ')}</span>
               </div>
             </div>
 
-            {/* bin一覧テーブル（5個表示でスクロール） */}
+            {/* bin一覧テーブル（コンパクト） */}
             <div className="relative">
-              <div className="overflow-auto" style={{ height: '320px' }}>
+              <div className="overflow-auto" style={{ height: '400px' }}>
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50 sticky top-0 z-20">
                     <tr>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
-                        選択
-                      </th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
-                        Bin
-                      </th>
-                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
-                        勝率 (%)
-                      </th>
-                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
-                        期待値 (%)
-                      </th>
-                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
-                        サンプル数
-                      </th>
-                      <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
-                        ステータス
-                      </th>
+                      <th className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase bg-gray-50">選択</th>
+                      <th className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase bg-gray-50">Bin</th>
+                      <th className="px-2 py-1 text-right text-xs font-medium text-gray-500 uppercase bg-gray-50">勝率</th>
+                      <th className="px-2 py-1 text-right text-xs font-medium text-gray-500 uppercase bg-gray-50">期待値</th>
+                      <th className="px-2 py-1 text-right text-xs font-medium text-gray-500 uppercase bg-gray-50">サンプル</th>
+                      <th className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase bg-gray-50">状態</th>
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
@@ -358,50 +359,49 @@ export default function BinSelectionPage({ params }: PageProps) {
                           }`}
                           onClick={() => handleBinToggle(activeSignalType.signal_type, bin.bin)}
                         >
-                          <td className="px-3 py-2 whitespace-nowrap">
+                          <td className="px-2 py-1 whitespace-nowrap">
                             <input
                               type="checkbox"
                               checked={isSelected}
                               onChange={() => handleBinToggle(activeSignalType.signal_type, bin.bin)}
-                              className="h-4 w-4 text-blue-600 rounded border-gray-300"
+                              className="h-3 w-3 text-blue-600 rounded border-gray-300"
                               onClick={(e) => e.stopPropagation()}
                             />
                           </td>
-                          <td className="px-3 py-2 whitespace-nowrap">
+                          <td className="px-2 py-1 whitespace-nowrap">
                             <div className="flex items-center">
-                              <span className="font-medium text-gray-900">
-                                Bin {bin.bin}
-                              </span>
-                              {bin.is_tomorrow && (
-                                <span className="ml-2 text-yellow-600 text-sm font-bold">★</span>
-                              )}
+                              <span className="font-medium text-gray-900 text-sm">Bin {bin.bin}</span>
+                              {bin.is_tomorrow && <span className="ml-1 text-yellow-600 text-xs">★</span>}
                             </div>
                           </td>
-                          <td className="px-3 py-2 whitespace-nowrap text-right">
-                            <span className={`font-medium ${
+                          <td className="px-2 py-1 whitespace-nowrap text-right">
+                            <span className={`font-medium text-sm ${
                               bin.win_rate >= 55 ? 'text-green-600' : 'text-gray-900'
                             }`}>
-                              {bin.win_rate.toFixed(1)}
+                              {bin.win_rate.toFixed(1)}%
                             </span>
                           </td>
-                          <td className="px-3 py-2 whitespace-nowrap text-right">
-                            <span className={`font-medium ${
+                          <td className="px-2 py-1 whitespace-nowrap text-right">
+                            <span className={`font-medium text-sm ${
                               bin.avg_profit_rate >= 0.5 ? 'text-green-600' : 
                               bin.avg_profit_rate >= 0 ? 'text-gray-900' : 'text-red-600'
                             }`}>
-                              {bin.avg_profit_rate > 0 ? '+' : ''}{bin.avg_profit_rate.toFixed(2)}
+                              {bin.avg_profit_rate > 0 ? '+' : ''}{bin.avg_profit_rate.toFixed(2)}%
                             </span>
                           </td>
-                          <td className="px-3 py-2 whitespace-nowrap text-right">
-                            <span className={`text-sm ${
+                          <td className="px-2 py-1 whitespace-nowrap text-right">
+                            <span className={`text-xs ${
                               bin.sample_count >= 30 ? 'text-gray-900' : 'text-gray-500'
                             }`}>
-                              {bin.sample_count}回
+                              {bin.sample_count}
                             </span>
                           </td>
-                          <td className="px-3 py-2 whitespace-nowrap text-center">
-                            <span className={getBinStatusBadge(bin)}>
-                              {bin.is_tomorrow ? '明日発火' : bin.is_excellent ? '優秀' : '標準'}
+                          <td className="px-2 py-1 whitespace-nowrap text-center">
+                            <span className={`inline-flex items-center px-1 py-0.5 rounded text-xs font-medium ${
+                              bin.is_tomorrow ? 'bg-yellow-100 text-yellow-800' :
+                              bin.is_excellent ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
+                            }`}>
+                              {bin.is_tomorrow ? '発火' : bin.is_excellent ? '優秀' : '標準'}
                             </span>
                           </td>
                         </tr>
@@ -415,85 +415,39 @@ export default function BinSelectionPage({ params }: PageProps) {
         )}
       </div>
 
-      {/* 選択中のbin */}
+      {/* 選択中のbin（コンパクト） */}
       {selectedBins.size > 0 && (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <h3 className="text-lg font-medium text-gray-900 mb-4">
-            選択中のbin ({selectedBins.size}個)
-          </h3>
+        <div className="bg-white rounded-lg border border-gray-200 p-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-medium text-gray-900">選択中 ({selectedBins.size}個)</span>
+            <button
+              onClick={handleStartConfig}
+              className="bg-blue-600 text-white px-3 py-1 rounded text-sm hover:bg-blue-700 font-medium"
+            >
+              📝 条件設定開始 →
+            </button>
+          </div>
           
-          <div className="space-y-2">
+          <div className="space-y-1">
             {getSelectedBinsList().map((selected) => (
               <div
                 key={`${selected.signal_type}_${selected.bin}`}
-                className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
+                className="flex items-center justify-between p-2 bg-gray-50 rounded text-sm"
               >
-                <div className="flex items-center space-x-4">
-                  <span className="font-medium">
-                    {selected.signal_type} / Bin{selected.bin}
-                  </span>
-                  <span className="text-sm text-gray-600">
+                <div className="flex items-center space-x-3">
+                  <span className="font-medium">{selected.signal_type} / Bin{selected.bin}</span>
+                  <span className="text-gray-600">
                     勝率{selected.win_rate}% / 期待値{selected.avg_profit_rate > 0 ? '+' : ''}{selected.avg_profit_rate}%
                   </span>
                 </div>
                 <button
                   onClick={() => handleBinToggle(selected.signal_type, selected.bin)}
-                  className="text-red-600 hover:text-red-800"
+                  className="text-red-600 hover:text-red-800 text-xs"
                 >
                   ✕
                 </button>
               </div>
             ))}
-          </div>
-          
-          <div className="mt-6 flex justify-end">
-            <button
-              onClick={handleStartConfiguration}
-              className="bg-blue-600 text-white px-6 py-3 rounded-md hover:bg-blue-700 font-medium"
-            >
-              選択したbinの条件設定を開始 →
-            </button>
-          </div>
-        </div>
-      )}
-      {/* 選択中のbin */}
-      {selectedBins.size > 0 && (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <h3 className="text-lg font-medium text-gray-900 mb-4">
-            選択中のbin ({selectedBins.size}個)
-          </h3>
-          
-          <div className="space-y-2">
-            {getSelectedBinsList().map((selected) => (
-              <div
-                key={`${selected.signal_type}_${selected.bin}`}
-                className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
-              >
-                <div className="flex items-center space-x-4">
-                  <span className="font-medium">
-                    {selected.signal_type} / Bin{selected.bin}
-                  </span>
-                  <span className="text-sm text-gray-600">
-                    勝率{selected.win_rate}% / 期待値{selected.avg_profit_rate > 0 ? '+' : ''}{selected.avg_profit_rate}%
-                  </span>
-                </div>
-                <button
-                  onClick={() => handleBinToggle(selected.signal_type, selected.bin)}
-                  className="text-red-600 hover:text-red-800"
-                >
-                  ✕
-                </button>
-              </div>
-            ))}
-          </div>
-          
-          <div className="mt-6 flex justify-end">
-            <button
-              onClick={handleStartConfiguration}
-              className="bg-blue-600 text-white px-6 py-3 rounded-md hover:bg-blue-700 font-medium"
-            >
-              選択したbinの条件設定を開始 →
-            </button>
           </div>
         </div>
       )}
