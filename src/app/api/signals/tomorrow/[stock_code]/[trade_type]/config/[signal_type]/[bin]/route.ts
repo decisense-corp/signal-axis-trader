@@ -120,9 +120,22 @@ export async function GET(request: NextRequest, context: RouteContext) {
     
     const signalInfo = signalInfoResult[0];
 
-    // 学習期間の基本データ取得（〜2024年6月30日）- 四本値追加版
+    // 🔧 修正: 学習期間の基本データ取得（〜2024年6月30日）- 重複問題解決版
     let baseQuery = `
-      WITH price_data AS (
+      WITH daily_prices AS (
+        -- まず日次株価データから前日終値を事前計算（重複回避）
+        SELECT
+          Date as price_date,
+          Code as stock_code_with_zero,
+          Open as day_open,
+          High as day_high,
+          Low as day_low,
+          Close as day_close,
+          LAG(Close) OVER (PARTITION BY Code ORDER BY Date) as prev_close
+        FROM \`kabu-376213.kabu2411.daily_quotes\`
+        WHERE Code = CONCAT('${stock_code}', '0')  -- 対象銘柄のみに絞る
+      ),
+      price_data AS (
         SELECT
           bsr.signal_date,
           bsr.signal_value,
@@ -132,17 +145,15 @@ export async function GET(request: NextRequest, context: RouteContext) {
           bsr.is_win,
           bsr.trading_volume,
           bsr.reference_date,
-          -- 四本値データを取得
-          dq.Open as day_open,
-          dq.High as day_high,
-          dq.Low as day_low,
-          dq.Close as day_close,
-          -- 前日終値を取得
-          LAG(dq.Close) OVER (PARTITION BY bsr.stock_code ORDER BY bsr.signal_date) as prev_close
+          -- 事前計算済みの四本値データを取得
+          dp.day_open,
+          dp.day_high,
+          dp.day_low,
+          dp.day_close,
+          dp.prev_close  -- ✅ 正しく計算された前日終値
         FROM \`kabu-376213.kabu2411.d20_basic_signal_results\` bsr
-        LEFT JOIN \`kabu-376213.kabu2411.daily_quotes\` dq
-          ON CONCAT(bsr.stock_code, '0') = dq.Code  -- 🔧 修正: 末尾0を追加してJOIN
-          AND bsr.signal_date = dq.Date
+        LEFT JOIN daily_prices dp
+          ON bsr.signal_date = dp.price_date
         WHERE bsr.signal_type = '${signal_type}'
           AND bsr.signal_bin = ${binNumber}
           AND bsr.trade_type = '${normalizedTradeType}'
@@ -177,7 +188,20 @@ export async function GET(request: NextRequest, context: RouteContext) {
         : `< ${prev_close_gap_threshold}`;
       
       baseQuery = `
-        WITH gap_calculated AS (
+        WITH daily_prices AS (
+          -- まず日次株価データから前日終値を事前計算（重複回避）
+          SELECT
+            Date as price_date,
+            Code as stock_code_with_zero,
+            Open as day_open,
+            High as day_high,
+            Low as day_low,
+            Close as day_close,
+            LAG(Close) OVER (PARTITION BY Code ORDER BY Date) as prev_close
+          FROM \`kabu-376213.kabu2411.daily_quotes\`
+          WHERE Code = CONCAT('${stock_code}', '0')  -- 対象銘柄のみに絞る
+        ),
+        gap_calculated AS (
           ${baseQuery}
         ),
         gap_filtered AS (
@@ -229,9 +253,9 @@ export async function GET(request: NextRequest, context: RouteContext) {
     // ベースライン統計計算
     const baselineStats = calculateStats(formattedLearningData);
     
-    // フィルタ後統計（利確・損切条件適用）
+    // 🔧 修正: フィルタ後統計（利確・損切条件適用）- 0値対応
     let filteredStats: ConfigStats | undefined;
-    if (profit_target_yen || loss_cut_yen) {
+    if ((profit_target_yen && profit_target_yen > 0) || (loss_cut_yen && loss_cut_yen > 0)) {
       const filteredData = applyProfitLossFilter(formattedLearningData, profit_target_yen, loss_cut_yen);
       filteredStats = calculateStats(filteredData);
     }
@@ -385,18 +409,26 @@ function calculateStats(data: LearningPeriodData[]): ConfigStats {
   };
 }
 
-// 利確・損切フィルタ適用関数
+// 🔧 修正: 利確・損切フィルタ適用関数 - 0値対応版
 function applyProfitLossFilter(
   data: LearningPeriodData[], 
   profitTargetYen?: number, 
   lossCutYen?: number
 ): LearningPeriodData[] {
+  // 0値の場合は元データをそのまま返す（純粋寄り引け）
+  if ((!profitTargetYen || profitTargetYen <= 0) && (!lossCutYen || lossCutYen <= 0)) {
+    return data;
+  }
+  
   return data.map(item => {
     let adjustedExitPrice = item.exit_price;
     let adjustedIsWin = item.is_win;
     let adjustedProfitRate = item.profit_rate;
     
-    if (profitTargetYen && lossCutYen) {
+    const hasValidProfitTarget = profitTargetYen && profitTargetYen > 0;
+    const hasValidLossCut = lossCutYen && lossCutYen > 0;
+    
+    if (hasValidProfitTarget && hasValidLossCut) {
       const profitTargetPrice = item.entry_price + profitTargetYen;
       const lossCutPrice = item.entry_price - lossCutYen;
       
@@ -413,6 +445,22 @@ function applyProfitLossFilter(
       }
       
       adjustedProfitRate = ((adjustedExitPrice - item.entry_price) / item.entry_price) * 100;
+    } else if (hasValidProfitTarget) {
+      // 利確のみの場合
+      const profitTargetPrice = item.entry_price + profitTargetYen;
+      if (item.exit_price >= profitTargetPrice) {
+        adjustedExitPrice = profitTargetPrice;
+        adjustedIsWin = true;
+        adjustedProfitRate = ((adjustedExitPrice - item.entry_price) / item.entry_price) * 100;
+      }
+    } else if (hasValidLossCut) {
+      // 損切のみの場合
+      const lossCutPrice = item.entry_price - lossCutYen;
+      if (item.exit_price <= lossCutPrice) {
+        adjustedExitPrice = lossCutPrice;
+        adjustedIsWin = false;
+        adjustedProfitRate = ((adjustedExitPrice - item.entry_price) / item.entry_price) * 100;
+      }
     }
     
     return {
