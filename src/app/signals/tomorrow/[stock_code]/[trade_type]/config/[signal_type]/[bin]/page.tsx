@@ -13,6 +13,11 @@ interface LearningPeriodData {
   is_win: boolean;
   trading_volume: number;
   reference_date: string;
+  day_open: number;
+  day_high: number;
+  day_low: number;
+  day_close: number;
+  prev_close: number;
 }
 
 interface ConfigStats {
@@ -49,6 +54,39 @@ interface PageProps {
     bin: string;
   }>;
 }
+
+// 安全な日付フォーマット関数
+const formatDate = (dateValue: any): string => {
+  try {
+    if (!dateValue) return 'N/A';
+    
+    let dateObj: Date;
+    
+    if (dateValue instanceof Date) {
+      dateObj = dateValue;
+    } else if (typeof dateValue === 'string') {
+      dateObj = new Date(dateValue);
+    } else if (typeof dateValue === 'object' && dateValue.value) {
+      dateObj = new Date(dateValue.value);
+    } else {
+      dateObj = new Date(String(dateValue));
+    }
+    
+    if (isNaN(dateObj.getTime())) {
+      console.warn('Invalid date value:', dateValue);
+      return 'N/A';
+    }
+    
+    return dateObj.toLocaleDateString('ja-JP', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    });
+  } catch (error) {
+    console.error('Date formatting error:', error, 'for value:', dateValue);
+    return 'N/A';
+  }
+};
 
 export default function ConfigPage({ params }: PageProps) {
   const router = useRouter();
@@ -471,7 +509,7 @@ export default function ConfigPage({ params }: PageProps) {
                   : 'border-transparent text-gray-500 hover:text-gray-700'
               }`}
             >
-              📋 生データ ({configData.learning_data.length}件)
+              📋 取引詳細 ({configData.learning_data.length}件)
             </button>
           </nav>
         </div>
@@ -541,53 +579,93 @@ export default function ConfigPage({ params }: PageProps) {
           
           {activeTab === 'data' && (
             <div className="space-y-4">
-              <h3 className="font-medium text-gray-900">学習期間の生データ（最新20件）</h3>
+              <h3 className="font-medium text-gray-900">学習期間の取引詳細（最新20件）</h3>
               
               <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200">
+                <table className="min-w-full divide-y divide-gray-200 text-xs">
                   <thead className="bg-gray-50">
                     <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">日付</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">シグナル値</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">仕掛け価格</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">手仕舞い価格</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">利益率</th>
-                      <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">勝敗</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">出来高</th>
+                      <th className="px-2 py-2 text-left font-medium text-gray-500 uppercase">日付</th>
+                      <th className="px-2 py-2 text-right font-medium text-gray-500 uppercase">前日終値</th>
+                      <th className="px-2 py-2 text-right font-medium text-gray-500 uppercase">始値</th>
+                      <th className="px-2 py-2 text-right font-medium text-gray-500 uppercase">高値</th>
+                      <th className="px-2 py-2 text-right font-medium text-gray-500 uppercase">安値</th>
+                      <th className="px-2 py-2 text-right font-medium text-gray-500 uppercase">終値</th>
+                      <th className="px-2 py-2 text-right font-medium text-gray-500 uppercase">終値→始値</th>
+                      <th className="px-2 py-2 text-right font-medium text-gray-500 uppercase">始値→高値</th>
+                      <th className="px-2 py-2 text-right font-medium text-gray-500 uppercase">始値→安値</th>
+                      <th className="px-2 py-2 text-right font-medium text-gray-500 uppercase">始値→終値</th>
+                      <th className="px-2 py-2 text-right font-medium text-gray-500 uppercase">利益率</th>
+                      <th className="px-2 py-2 text-center font-medium text-gray-500 uppercase">勝敗</th>
+                      <th className="px-2 py-2 text-right font-medium text-gray-500 uppercase">出来高</th>
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
-                    {configData.learning_data.slice(0, 20).map((row, index) => (
-                      <tr key={index} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 text-sm text-gray-900">
-                          {new Date(row.signal_date).toLocaleDateString('ja-JP')}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-900 text-right">
-                          {row.signal_value.toFixed(2)}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-900 text-right">
-                          ¥{row.entry_price.toLocaleString()}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-900 text-right">
-                          ¥{row.exit_price.toLocaleString()}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-right">
-                          <span className={row.profit_rate >= 0 ? 'text-green-600' : 'text-red-600'}>
-                            {row.profit_rate >= 0 ? '+' : ''}{row.profit_rate.toFixed(2)}%
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                            row.is_win ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                          }`}>
-                            {row.is_win ? '勝' : '負'}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-900 text-right">
-                          {row.trading_volume.toLocaleString()}
-                        </td>
-                      </tr>
-                    ))}
+                    {configData.learning_data.slice(0, 20).map((row, index) => {
+                      // 価格変動率の計算
+                      const gapRate = row.prev_close ? ((row.day_open - row.prev_close) / row.prev_close * 100) : 0;
+                      const openToHighRate = row.day_open ? ((row.day_high - row.day_open) / row.day_open * 100) : 0;
+                      const openToLowRate = row.day_open ? ((row.day_low - row.day_open) / row.day_open * 100) : 0;
+                      const openToCloseRate = row.day_open ? ((row.day_close - row.day_open) / row.day_open * 100) : 0;
+                      
+                      return (
+                        <tr key={index} className="hover:bg-gray-50">
+                          <td className="px-2 py-2 text-gray-900">
+                            {formatDate(row.signal_date)}
+                          </td>
+                          <td className="px-2 py-2 text-gray-900 text-right">
+                            ¥{row.prev_close?.toLocaleString() || 'N/A'}
+                          </td>
+                          <td className="px-2 py-2 text-gray-900 text-right">
+                            ¥{row.day_open?.toLocaleString() || 'N/A'}
+                          </td>
+                          <td className="px-2 py-2 text-gray-900 text-right">
+                            ¥{row.day_high?.toLocaleString() || 'N/A'}
+                          </td>
+                          <td className="px-2 py-2 text-gray-900 text-right">
+                            ¥{row.day_low?.toLocaleString() || 'N/A'}
+                          </td>
+                          <td className="px-2 py-2 text-gray-900 text-right">
+                            ¥{row.day_close?.toLocaleString() || 'N/A'}
+                          </td>
+                          <td className="px-2 py-2 text-right">
+                            <span className={gapRate >= 0 ? 'text-green-600' : 'text-red-600'}>
+                              {gapRate >= 0 ? '+' : ''}{gapRate.toFixed(1)}%
+                            </span>
+                          </td>
+                          <td className="px-2 py-2 text-right">
+                            <span className={openToHighRate >= 0 ? 'text-green-600' : 'text-red-600'}>
+                              {openToHighRate >= 0 ? '+' : ''}{openToHighRate.toFixed(1)}%
+                            </span>
+                          </td>
+                          <td className="px-2 py-2 text-right">
+                            <span className={openToLowRate >= 0 ? 'text-green-600' : 'text-red-600'}>
+                              {openToLowRate >= 0 ? '+' : ''}{openToLowRate.toFixed(1)}%
+                            </span>
+                          </td>
+                          <td className="px-2 py-2 text-right">
+                            <span className={openToCloseRate >= 0 ? 'text-green-600' : 'text-red-600'}>
+                              {openToCloseRate >= 0 ? '+' : ''}{openToCloseRate.toFixed(1)}%
+                            </span>
+                          </td>
+                          <td className="px-2 py-2 text-right">
+                            <span className={row.profit_rate >= 0 ? 'text-green-600 font-medium' : 'text-red-600 font-medium'}>
+                              {row.profit_rate >= 0 ? '+' : ''}{row.profit_rate.toFixed(2)}%
+                            </span>
+                          </td>
+                          <td className="px-2 py-2 text-center">
+                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium ${
+                              row.is_win ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                            }`}>
+                              {row.is_win ? '勝' : '負'}
+                            </span>
+                          </td>
+                          <td className="px-2 py-2 text-gray-900 text-right">
+                            {row.trading_volume?.toLocaleString() || 'N/A'}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

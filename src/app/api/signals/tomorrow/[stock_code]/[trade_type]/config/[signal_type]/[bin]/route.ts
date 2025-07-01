@@ -11,6 +11,11 @@ interface LearningPeriodData {
   is_win: boolean;
   trading_volume: number;
   reference_date: string;
+  day_open: number;
+  day_high: number;
+  day_low: number;
+  day_close: number;
+  prev_close: number;
 }
 
 interface ConfigStats {
@@ -115,8 +120,38 @@ export async function GET(request: NextRequest, context: RouteContext) {
     
     const signalInfo = signalInfoResult[0];
 
-    // 学習期間の基本データ取得（〜2024年6月30日）
+    // 学習期間の基本データ取得（〜2024年6月30日）- 四本値追加版
     let baseQuery = `
+      WITH price_data AS (
+        SELECT
+          bsr.signal_date,
+          bsr.signal_value,
+          bsr.entry_price,
+          bsr.exit_price,
+          bsr.profit_rate,
+          bsr.is_win,
+          bsr.trading_volume,
+          bsr.reference_date,
+          -- 四本値データを取得
+          dq.Open as day_open,
+          dq.High as day_high,
+          dq.Low as day_low,
+          dq.Close as day_close,
+          -- 前日終値を取得
+          LAG(dq.Close) OVER (PARTITION BY bsr.stock_code ORDER BY bsr.signal_date) as prev_close
+        FROM \`kabu-376213.kabu2411.d20_basic_signal_results\` bsr
+        LEFT JOIN \`kabu-376213.kabu2411.daily_quotes\` dq
+          ON bsr.stock_code = dq.Code
+          AND bsr.signal_date = dq.Date
+        WHERE bsr.signal_type = '${signal_type}'
+          AND bsr.signal_bin = ${binNumber}
+          AND bsr.trade_type = '${normalizedTradeType}'
+          AND bsr.stock_code = '${stock_code}'
+          AND bsr.signal_date <= '2024-06-30'  -- 学習期間のみ
+          AND bsr.entry_price IS NOT NULL
+          AND bsr.exit_price IS NOT NULL
+          AND bsr.profit_rate IS NOT NULL
+      )
       SELECT
         signal_date,
         signal_value,
@@ -125,37 +160,47 @@ export async function GET(request: NextRequest, context: RouteContext) {
         profit_rate,
         is_win,
         trading_volume,
-        reference_date
-      FROM \`kabu-376213.kabu2411.d20_basic_signal_results\`
-      WHERE signal_type = '${signal_type}'
-        AND signal_bin = ${binNumber}
-        AND trade_type = '${normalizedTradeType}'
-        AND stock_code = '${stock_code}'
-        AND signal_date <= '2024-06-30'  -- 学習期間のみ
-        AND entry_price IS NOT NULL
-        AND exit_price IS NOT NULL
-        AND profit_rate IS NOT NULL
+        reference_date,
+        day_open,
+        day_high,
+        day_low,
+        day_close,
+        prev_close
+      FROM price_data
+      WHERE prev_close IS NOT NULL  -- 前日終値がある場合のみ
     `;
 
-    // フィルタ条件を追加
-    let filterConditions: string[] = [];
-    
-    // 前日終値ギャップ条件
+    // フィルタ条件を追加（BigQueryエラー修正：ウィンドウ関数をCTEで事前計算）
     if (prev_close_gap_condition !== 'all' && prev_close_gap_threshold !== undefined) {
-      if (prev_close_gap_condition === 'above') {
-        filterConditions.push(`(entry_price - LAG(exit_price) OVER (PARTITION BY stock_code ORDER BY signal_date)) / LAG(exit_price) OVER (PARTITION BY stock_code ORDER BY signal_date) * 100 >= ${prev_close_gap_threshold}`);
-      } else if (prev_close_gap_condition === 'below') {
-        filterConditions.push(`(entry_price - LAG(exit_price) OVER (PARTITION BY stock_code ORDER BY signal_date)) / LAG(exit_price) OVER (PARTITION BY stock_code ORDER BY signal_date) * 100 < ${prev_close_gap_threshold}`);
-      }
-    }
-
-    if (filterConditions.length > 0) {
+      const gapCondition = prev_close_gap_condition === 'above' 
+        ? `>= ${prev_close_gap_threshold}`
+        : `< ${prev_close_gap_threshold}`;
+      
       baseQuery = `
-        WITH gap_data AS (
+        WITH gap_calculated AS (
           ${baseQuery}
+        ),
+        gap_filtered AS (
+          SELECT *,
+            ((day_open - prev_close) / prev_close * 100) as gap_rate
+          FROM gap_calculated
         )
-        SELECT * FROM gap_data
-        WHERE ${filterConditions.join(' AND ')}
+        SELECT 
+          signal_date,
+          signal_value,
+          entry_price,
+          exit_price,
+          profit_rate,
+          is_win,
+          trading_volume,
+          reference_date,
+          day_open,
+          day_high,
+          day_low,
+          day_close,
+          prev_close
+        FROM gap_filtered
+        WHERE gap_rate ${gapCondition}
       `;
     }
 
@@ -173,7 +218,12 @@ export async function GET(request: NextRequest, context: RouteContext) {
       profit_rate: row.profit_rate || 0,
       is_win: row.is_win || false,
       trading_volume: row.trading_volume || 0,
-      reference_date: row.reference_date || ''
+      reference_date: row.reference_date || '',
+      day_open: row.day_open || 0,
+      day_high: row.day_high || 0,
+      day_low: row.day_low || 0,
+      day_close: row.day_close || 0,
+      prev_close: row.prev_close || 0
     }));
 
     // ベースライン統計計算
