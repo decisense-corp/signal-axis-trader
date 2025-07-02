@@ -1,4 +1,5 @@
-// src/app/api/signals/tomorrow/route.ts (最適化版)
+// src/app/api/signals/tomorrow/route.ts (劇的単純化版)
+// 🔥 d60_stock_tradetype_summary使用で80行→15行に削減
 import { NextRequest, NextResponse } from 'next/server';
 import { BigQueryClient } from '@/lib/bigquery';
 
@@ -17,253 +18,77 @@ interface TomorrowSignalCandidate {
 
 export async function GET(request: NextRequest) {
   try {
-    console.log('🔍 機能1: 明日のシグナル処理開始...');
+    console.log('🚀 機能1: 明日のシグナル処理開始（劇的単純化版）...');
     
     const bigquery = new BigQueryClient();
     
     // URLパラメータから設定を取得
     const { searchParams } = new URL(request.url);
-    const limit = parseInt(searchParams.get('limit') || '1000');
+    const limit = parseInt(searchParams.get('limit') || '50');
     const offset = parseInt(searchParams.get('offset') || '0');
     const orderBy = searchParams.get('orderBy') || 'max_win_rate';
     const orderDir = searchParams.get('orderDir') || 'DESC';
+    const tradeType = searchParams.get('tradeType'); // 'BUY' | 'SELL' | null
+    const minWinRate = parseFloat(searchParams.get('minWinRate') || '0');
+    const minExcellentPatterns = parseInt(searchParams.get('minExcellentPatterns') || '1');
 
-    // 営業日カレンダーから翌営業日を取得
-    const nextTradingDateQuery = `
-      WITH latest_quote_date AS (
-        SELECT MAX(Date) as latest_date
-        FROM \`kabu-376213.kabu2411.daily_quotes\`
-      )
-      SELECT MIN(tc.Date) as next_trading_date
-      FROM \`kabu-376213.kabu2411.trading_calendar\` tc
-      CROSS JOIN latest_quote_date lqd
-      WHERE tc.Date > lqd.latest_date
-        AND tc.HolidayDivision = '1'
-    `;
-    
-    const tradingDateResult = await bigquery.query(nextTradingDateQuery);
-    
-    if (!tradingDateResult || tradingDateResult.length === 0) {
-      throw new Error('営業日カレンダーからデータを取得できませんでした');
-    }
-    
-    const rawNextTradingDate = tradingDateResult[0]?.next_trading_date;
-    
-    if (!rawNextTradingDate) {
-      throw new Error('次の営業日データが取得できませんでした');
-    }
-    
-    // 日付フォーマット処理（型安全版）
-    const tomorrowStr = (() => {
-      try {
-        if (rawNextTradingDate instanceof Date) {
-          return rawNextTradingDate.toISOString().split('T')[0];
-        } else if (typeof rawNextTradingDate === 'object' && rawNextTradingDate && 'value' in rawNextTradingDate) {
-          return String(rawNextTradingDate.value);
-        } else {
-          const dateStr = String(rawNextTradingDate);
-          return dateStr.includes('T') ? dateStr.split('T')[0] : dateStr;
-        }
-      } catch (error) {
-        throw new Error(`日付フォーマットエラー: ${error}`);
-      }
-    })() as string;
-
-    console.log(`📅 対象日: ${tomorrowStr}`);
-
-    // 最適化版クエリ: signal_binを直接使用
+    // 🔥 劇的単純化: 事前計算済みテーブルから直接取得（15行のみ）
     const query = `
-      WITH tomorrow_4axis_signals AS (
-        -- 明日発生予定の具体的な4軸シグナルを取得（signal_bin使用）
-        SELECT 
-          sr.stock_code,
-          sr.stock_name,
-          CASE 
-            WHEN sr.signal_value > 0 THEN 'BUY'
-            ELSE 'SELL'
-          END as trade_type,
-          sr.signal_type,
-          sr.signal_bin
-        FROM \`kabu-376213.kabu2411.d10_simple_signals\` sr
-        WHERE sr.signal_date = DATE('${tomorrowStr}')
-          AND sr.signal_bin IS NOT NULL  -- 既に100%データ入ってるので安心
-          AND sr.stock_code IN (
-            SELECT stock_code 
-            FROM \`kabu-376213.kabu2411.master_trading_stocks\`
-          )
-          AND sr.signal_value IS NOT NULL
-      ),
-      
-      axis_performance AS (
-        -- 明日の4軸シグナルに対応するパフォーマンス統計を取得
-        SELECT
-          t4.stock_code,
-          t4.stock_name,
-          t4.trade_type,
-          t4.signal_type,
-          t4.signal_bin,
-          -- 学習期間データを使用（d30_learning_period_snapshot）
-          lps.win_rate,
-          lps.avg_profit_rate as expected_value,
-          lps.total_signals as sample_count,
-          CASE 
-            WHEN lps.win_rate >= 55.0 
-            AND lps.avg_profit_rate >= 0.5 
-            AND lps.total_signals >= 20  -- サンプル数20以上
-            THEN 1 ELSE 0 
-          END as is_excellent
-        FROM tomorrow_4axis_signals t4
-        LEFT JOIN \`kabu-376213.kabu2411.d30_learning_period_snapshot\` lps
-          ON t4.stock_code = lps.stock_code
-          AND t4.trade_type = lps.trade_type
-          AND t4.signal_type = lps.signal_type
-          AND t4.signal_bin = lps.signal_bin
-      ),
-      
-      stock_summary AS (
-        -- 銘柄×売買方向でサマリを作成（サンプル数20以上のみ）
-        SELECT
-          stock_code,
-          stock_name,
-          trade_type,
-          COUNT(*) as total_4axis_signals,
-          -- 優秀パターン数（サンプル数20以上のみ）
-          COUNT(DISTINCT CASE WHEN sample_count >= 20 AND is_excellent = 1 THEN signal_type END) as excellent_pattern_count,
-          -- 最高勝率（サンプル数20以上のみ）
-          MAX(CASE WHEN sample_count >= 20 AND is_excellent = 1 THEN win_rate END) as max_win_rate,
-          -- 最高期待値（サンプル数20以上のみ）
-          MAX(CASE WHEN sample_count >= 20 AND is_excellent = 1 THEN expected_value END) as max_expected_value,
-          -- 平均勝率（サンプル数20以上のみ）
-          AVG(CASE WHEN sample_count >= 20 THEN win_rate END) as avg_win_rate,
-          -- 平均期待リターン（サンプル数20以上のみ）
-          AVG(CASE WHEN sample_count >= 20 THEN expected_value END) as avg_expected_return,
-          -- 総サンプル数（サンプル数20以上のみ）
-          SUM(CASE WHEN sample_count >= 20 THEN sample_count END) as total_samples
-        FROM axis_performance
-        GROUP BY stock_code, stock_name, trade_type
-        HAVING COUNT(DISTINCT CASE WHEN sample_count >= 20 AND is_excellent = 1 THEN signal_type END) > 0  -- 優秀パターンがある場合のみ
-      )
-      
-      SELECT
+      SELECT 
         stock_code,
         stock_name,
         trade_type,
         ROUND(COALESCE(max_win_rate, 0), 1) as max_win_rate,
-        ROUND(COALESCE(max_expected_value, 0), 2) as max_expected_value,
-        excellent_pattern_count,
-        '未（対象あり）' as processing_status,
-        COALESCE(total_samples, 0) as total_samples,
+        ROUND(COALESCE(max_avg_profit, 0), 4) as max_expected_value,
+        excellent_patterns as excellent_pattern_count,
+        processing_status,
+        total_patterns as total_samples,
         ROUND(COALESCE(avg_win_rate, 0), 1) as avg_win_rate,
-        ROUND(COALESCE(avg_expected_return, 0), 2) as avg_expected_return
-      FROM stock_summary
+        ROUND(COALESCE(avg_avg_profit, 0), 4) as avg_expected_return
+      FROM \`kabu-376213.kabu2411.d60_stock_tradetype_summary\`
+      WHERE excellent_patterns >= ${minExcellentPatterns}
+        AND COALESCE(max_win_rate, 0) >= ${minWinRate}
+        ${tradeType ? `AND trade_type = '${tradeType}'` : ''}
       ORDER BY 
         CASE 
           WHEN '${orderBy}' = 'max_win_rate' THEN COALESCE(max_win_rate, 0)
-          WHEN '${orderBy}' = 'max_expected_value' THEN COALESCE(max_expected_value, 0)
-          WHEN '${orderBy}' = 'excellent_pattern_count' THEN excellent_pattern_count
+          WHEN '${orderBy}' = 'max_avg_profit' THEN COALESCE(max_avg_profit, 0)
+          WHEN '${orderBy}' = 'excellent_patterns' THEN excellent_patterns
           ELSE COALESCE(max_win_rate, 0)
         END ${orderDir}
       LIMIT ${limit} OFFSET ${offset}
     `;
 
-    console.log('📊 明日のシグナル取得クエリ実行中...');
+    console.log('⚡ 事前計算済みテーブルから高速取得中...');
     const results = await bigquery.query(query);
     
     // 型変換とフォーマット
     const candidates: TomorrowSignalCandidate[] = results.map((row: any) => ({
       stock_code: row.stock_code,
       stock_name: row.stock_name,
-      trade_type: row.trade_type,
-      max_win_rate: row.max_win_rate,
-      max_expected_value: row.max_expected_value,
-      excellent_pattern_count: row.excellent_pattern_count,
-      processing_status: row.processing_status,
-      total_samples: row.total_samples,
-      avg_win_rate: row.avg_win_rate,
-      avg_expected_return: row.avg_expected_return,
+      trade_type: row.trade_type as 'BUY' | 'SELL',
+      max_win_rate: row.max_win_rate || 0,
+      max_expected_value: row.max_expected_value || 0,
+      excellent_pattern_count: row.excellent_pattern_count || 0,
+      processing_status: row.processing_status as '済（対象あり）' | '済（対象なし）' | '未（対象あり）' | '未（対象なし）',
+      total_samples: row.total_samples || 0,
+      avg_win_rate: row.avg_win_rate || 0,
+      avg_expected_return: row.avg_expected_return || 0,
     }));
 
-    // 総件数も取得（ページネーション用）
+    // 🔥 総件数も超高速取得
     const countQuery = `
-      WITH tomorrow_4axis_signals AS (
-        -- 明日発生予定の具体的な4軸シグナルを取得（signal_bin使用）
-        SELECT 
-          sr.stock_code,
-          sr.stock_name,
-          CASE 
-            WHEN sr.signal_value > 0 THEN 'BUY'
-            ELSE 'SELL'
-          END as trade_type,
-          sr.signal_type,
-          sr.signal_bin
-        FROM \`kabu-376213.kabu2411.d10_simple_signals\` sr
-        WHERE sr.signal_date = DATE('${tomorrowStr}')
-          AND sr.signal_bin IS NOT NULL  -- 既に100%データ入ってるので安心
-          AND sr.stock_code IN (
-            SELECT stock_code 
-            FROM \`kabu-376213.kabu2411.master_trading_stocks\`
-          )
-          AND sr.signal_value IS NOT NULL
-      ),
-      
-      axis_performance AS (
-        -- 明日の4軸シグナルに対応するパフォーマンス統計を取得
-        SELECT
-          t4.stock_code,
-          t4.stock_name,
-          t4.trade_type,
-          t4.signal_type,
-          t4.signal_bin,
-          -- 学習期間データを使用（d30_learning_period_snapshot）
-          lps.win_rate,
-          lps.avg_profit_rate as expected_value,
-          lps.total_signals as sample_count,
-          CASE 
-            WHEN lps.win_rate >= 55.0 
-            AND lps.avg_profit_rate >= 0.5 
-            AND lps.total_signals >= 20  -- サンプル数20以上
-            THEN 1 ELSE 0 
-          END as is_excellent
-        FROM tomorrow_4axis_signals t4
-        LEFT JOIN \`kabu-376213.kabu2411.d30_learning_period_snapshot\` lps
-          ON t4.stock_code = lps.stock_code
-          AND t4.trade_type = lps.trade_type
-          AND t4.signal_type = lps.signal_type
-          AND t4.signal_bin = lps.signal_bin
-      ),
-      
-      stock_summary AS (
-        -- 銘柄×売買方向でサマリを作成（サンプル数20以上のみ）
-        SELECT
-          stock_code,
-          stock_name,
-          trade_type,
-          COUNT(*) as total_4axis_signals,
-          -- 優秀パターン数（サンプル数20以上のみ）
-          COUNT(DISTINCT CASE WHEN sample_count >= 20 AND is_excellent = 1 THEN signal_type END) as excellent_pattern_count,
-          -- 最高勝率（サンプル数20以上のみ）
-          MAX(CASE WHEN sample_count >= 20 AND is_excellent = 1 THEN win_rate END) as max_win_rate,
-          -- 最高期待値（サンプル数20以上のみ）
-          MAX(CASE WHEN sample_count >= 20 AND is_excellent = 1 THEN expected_value END) as max_expected_value,
-          -- 平均勝率（サンプル数20以上のみ）
-          AVG(CASE WHEN sample_count >= 20 THEN win_rate END) as avg_win_rate,
-          -- 平均期待リターン（サンプル数20以上のみ）
-          AVG(CASE WHEN sample_count >= 20 THEN expected_value END) as avg_expected_return,
-          -- 総サンプル数（サンプル数20以上のみ）
-          SUM(CASE WHEN sample_count >= 20 THEN sample_count END) as total_samples
-        FROM axis_performance
-        GROUP BY stock_code, stock_name, trade_type
-        HAVING COUNT(DISTINCT CASE WHEN sample_count >= 20 AND is_excellent = 1 THEN signal_type END) > 0  -- 優秀パターンがある場合のみ
-      )
-      
       SELECT COUNT(*) as total_count
-      FROM stock_summary
+      FROM \`kabu-376213.kabu2411.d60_stock_tradetype_summary\`
+      WHERE excellent_patterns >= ${minExcellentPatterns}
+        AND COALESCE(max_win_rate, 0) >= ${minWinRate}
+        ${tradeType ? `AND trade_type = '${tradeType}'` : ''}
     `;
     
     const countResult = await bigquery.query(countQuery);
     const totalCount = countResult[0]?.total_count || 0;
 
-    console.log(`✅ 明日のシグナル ${candidates.length}件を取得`);
+    console.log(`✅ 明日のシグナル ${candidates.length}件を超高速取得完了`);
 
     return NextResponse.json({
       success: true,
@@ -276,7 +101,8 @@ export async function GET(request: NextRequest) {
       },
       metadata: {
         query_time: new Date().toISOString(),
-        target_date: tomorrowStr,
+        source_table: 'd60_stock_tradetype_summary',
+        optimization: '事前計算済みテーブル使用で劇的高速化',
         description: '機能1: 明日発生するシグナルの条件設定対象（銘柄×売買方向）'
       }
     });
