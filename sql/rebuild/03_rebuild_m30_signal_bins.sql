@@ -1,35 +1,38 @@
 /*
-ファイル: 03_rebuild_m30_signal_bins.sql
-説明: Phase 3 - 27種類シグナルから20分位境界値を再計算
-作成日: 2025年7月2日
-依存: d10_simple_signals（Phase 2完了）
+ファイル: 03_rebuild_m30_signal_bins_17.sql
+説明: Phase 3 - 17指標（新指標10 + 比較用7）から20分位境界値を再計算
+作成日: 2025年7月3日
+依存: d10_simple_signals（Phase 2完了 - 17指標版）
 実行時間: 約1-2分
-対象: m30_signal_bins テーブルの完全再構築
+対象: m30_signal_bins テーブルの完全再構築（17指標版）
+背景: Phase 7で確認された技術分析の限界を突破するための独自指標検証
 */
 
 -- ============================================================================
--- Phase 3: m30_signal_bins 再計算実行
+-- Phase 3: m30_signal_bins 再計算実行（17指標版）
 -- ============================================================================
 
 -- 処理開始メッセージ
 SELECT 
-  'Phase 3: m30_signal_bins再計算を開始します' as message,
-  'データソース: d10_simple_signals (27種類, 13,973,509行)' as source_info,
-  CURRENT_TIMESTAMP('Asia/Tokyo') as start_time;
+  'Phase 3: m30_signal_bins再計算を開始します（17指標版）' as message,
+  'データソース: d10_simple_signals (17指標, 858万件)' as source_info,
+  '目的: 新指標による独自性確保・市場効率化回避' as purpose,
+  CURRENT_TIMESTAMP() as start_time;
 
 -- ============================================================================
 -- 1. 既存データのバックアップ（安全性確保）
 -- ============================================================================
 
--- バックアップテーブル作成
-CREATE OR REPLACE TABLE `kabu-376213.kabu2411.m30_signal_bins_backup_20250702` AS
+-- バックアップテーブル作成（日付付き）
+CREATE OR REPLACE TABLE `kabu-376213.kabu2411.m30_signal_bins_backup_20250703` AS
 SELECT *, CURRENT_TIMESTAMP() as backup_timestamp
 FROM `kabu-376213.kabu2411.m30_signal_bins`;
 
 SELECT 
   'バックアップ完了' as status,
-  COUNT(*) as backup_record_count
-FROM `kabu-376213.kabu2411.m30_signal_bins_backup_20250702`;
+  COUNT(*) as backup_record_count,
+  COUNT(DISTINCT signal_type) as old_signal_types
+FROM `kabu-376213.kabu2411.m30_signal_bins_backup_20250703`;
 
 -- ============================================================================
 -- 2. 既存データをクリア
@@ -38,7 +41,7 @@ FROM `kabu-376213.kabu2411.m30_signal_bins_backup_20250702`;
 TRUNCATE TABLE `kabu-376213.kabu2411.m30_signal_bins`;
 
 -- ============================================================================
--- 3. 27種類シグナルから20分位境界値を再計算
+-- 3. 17指標から20分位境界値を再計算
 -- ============================================================================
 
 INSERT INTO `kabu-376213.kabu2411.m30_signal_bins`
@@ -94,8 +97,8 @@ SELECT
   ROUND(mean_value, 6) as mean_value,
   ROUND(median_value, 6) as median_value,
   ROUND(std_value, 6) as std_value,
-  CURRENT_DATE('Asia/Tokyo') as calculation_date,
-  CURRENT_TIMESTAMP('Asia/Tokyo') as created_at
+  CURRENT_DATE() as calculation_date,
+  CURRENT_TIMESTAMP() as created_at
 FROM
   expanded_bins
 WHERE
@@ -109,7 +112,7 @@ ORDER BY
 
 -- 基本統計確認
 SELECT 
-  '4-1. 基本統計確認' as check_point,
+  '4-1 基本統計確認' as check_point,
   COUNT(DISTINCT signal_type) as signal_type_count,
   COUNT(*) as total_bins,
   COUNT(*) / COUNT(DISTINCT signal_type) as avg_bins_per_signal,
@@ -118,14 +121,32 @@ SELECT
   AVG(sample_count) as avg_sample_count
 FROM `kabu-376213.kabu2411.m30_signal_bins`;
 
+-- 新指標vs既存指標の境界値構成確認
+SELECT 
+  '4-2 新指標vs既存指標構成' as check_point,
+  CASE 
+    WHEN signal_type LIKE '%High_Price_Score%' OR signal_type LIKE '%Low_Price_Score%' THEN '新指標'
+    ELSE '比較用既存指標'
+  END as indicator_group,
+  COUNT(DISTINCT signal_type) as signal_count,
+  COUNT(*) as total_bins,
+  ROUND(AVG(sample_count), 0) as avg_sample_count
+FROM `kabu-376213.kabu2411.m30_signal_bins`
+GROUP BY 
+  CASE 
+    WHEN signal_type LIKE '%High_Price_Score%' OR signal_type LIKE '%Low_Price_Score%' THEN '新指標'
+    ELSE '比較用既存指標'
+  END
+ORDER BY signal_count DESC;
+
 -- シグナルタイプ別確認
 SELECT 
-  '4-2. シグナルタイプ別確認' as check_point,
+  '4-3 シグナルタイプ別確認' as check_point,
   signal_type,
   COUNT(*) as bin_count,
   MIN(signal_bin) as min_bin,
   MAX(signal_bin) as max_bin,
-  sample_count,
+  ROUND(sample_count, 0) as sample_count,
   ROUND(mean_value, 4) as mean_val,
   ROUND(std_value, 4) as std_val
 FROM `kabu-376213.kabu2411.m30_signal_bins`
@@ -134,27 +155,7 @@ ORDER BY signal_type;
 
 -- 境界値の論理チェック
 SELECT 
-  '4-3. 境界値論理チェック' as check_point,
-  signal_type,
-  signal_bin,
-  lower_bound,
-  upper_bound,
-  upper_bound - lower_bound as range_width,
-  CASE 
-    WHEN lower_bound >= upper_bound THEN 'ERROR: 下限 >= 上限'
-    WHEN lower_bound IS NULL OR upper_bound IS NULL THEN 'ERROR: NULL値'
-    ELSE 'OK'
-  END as validation_status
-FROM `kabu-376213.kabu2411.m30_signal_bins`
-WHERE 
-  lower_bound >= upper_bound 
-  OR lower_bound IS NULL 
-  OR upper_bound IS NULL
-ORDER BY signal_type, signal_bin;
-
--- エラーがない場合の確認
-SELECT 
-  '4-4. エラー件数確認' as check_point,
+  '4-4 境界値論理チェック' as check_point,
   COUNT(*) as error_count,
   CASE 
     WHEN COUNT(*) = 0 THEN '✅ 境界値エラーなし'
@@ -166,9 +167,9 @@ WHERE
   OR lower_bound IS NULL 
   OR upper_bound IS NULL;
 
--- サンプル境界値表示（確認用）
+-- サンプル境界値表示（新指標重点確認）
 SELECT 
-  '4-5. サンプル境界値（最初の5シグナル）' as check_point,
+  '4-5 新指標サンプル境界値' as check_point,
   signal_type,
   signal_bin,
   ROUND(lower_bound, 4) as lower_bound,
@@ -176,74 +177,74 @@ SELECT
   percentile_rank,
   sample_count
 FROM `kabu-376213.kabu2411.m30_signal_bins`
-WHERE signal_type IN (
-  SELECT signal_type 
-  FROM `kabu-376213.kabu2411.m30_signal_bins` 
-  GROUP BY signal_type 
-  ORDER BY signal_type 
-  LIMIT 5
-)
-ORDER BY signal_type, signal_bin;
+WHERE signal_type LIKE '%High_Price_Score%' OR signal_type LIKE '%Low_Price_Score%'
+  AND signal_bin IN (5, 10, 15, 20)  -- 代表的な分位点のみ表示
+ORDER BY signal_type, signal_bin
+LIMIT 20;
 
 -- ============================================================================
--- 5. 旧データとの比較（37種類→27種類）
+-- 5. 旧データとの比較（27種類→17指標への変化）
 -- ============================================================================
 
 -- 種類数の比較
 SELECT 
-  '5-1. シグナル種類数比較' as comparison_point,
+  '5-1 シグナル種類数比較' as comparison_point,
   'バックアップ(旧)' as data_source,
   COUNT(DISTINCT signal_type) as signal_types
-FROM `kabu-376213.kabu2411.m30_signal_bins_backup_20250702`
+FROM `kabu-376213.kabu2411.m30_signal_bins_backup_20250703`
 UNION ALL
 SELECT 
-  '5-1. シグナル種類数比較' as comparison_point,
-  '新規作成(新)' as data_source,
+  '5-1 シグナル種類数比較' as comparison_point,
+  '新規作成(17指標版)' as data_source,
   COUNT(DISTINCT signal_type) as signal_types
 FROM `kabu-376213.kabu2411.m30_signal_bins`
 ORDER BY data_source;
 
--- 共通シグナルの境界値変化確認
+-- 共通シグナルの境界値変化確認（残存した比較用指標のみ）
 SELECT 
-  '5-2. 共通シグナル境界値変化' as comparison_point,
-  new.signal_type,
-  new.signal_bin,
-  ROUND(old.upper_bound, 4) as old_upper_bound,
-  ROUND(new.upper_bound, 4) as new_upper_bound,
-  ROUND(new.upper_bound - old.upper_bound, 4) as diff,
-  ROUND(old.sample_count, 0) as old_sample_count,
-  ROUND(new.sample_count, 0) as new_sample_count
-FROM `kabu-376213.kabu2411.m30_signal_bins` new
-LEFT JOIN `kabu-376213.kabu2411.m30_signal_bins_backup_20250702` old
-  ON new.signal_type = old.signal_type 
-  AND new.signal_bin = old.signal_bin
-WHERE new.signal_bin IN (5, 10, 15, 20)  -- 代表的な分位点のみ表示
-  AND new.signal_type IN (
-    SELECT signal_type 
-    FROM `kabu-376213.kabu2411.m30_signal_bins` 
-    GROUP BY signal_type 
-    ORDER BY signal_type 
-    LIMIT 3  -- 最初の3シグナルのみ
-  )
-ORDER BY new.signal_type, new.signal_bin;
+  '5-2 共通シグナル境界値変化' as comparison_point,
+  curr.signal_type,
+  curr.signal_bin,
+  ROUND(prev.upper_bound, 4) as old_upper_bound,
+  ROUND(curr.upper_bound, 4) as new_upper_bound,
+  ROUND(curr.upper_bound - prev.upper_bound, 4) as diff,
+  ROUND(prev.sample_count, 0) as old_sample_count,
+  ROUND(curr.sample_count, 0) as new_sample_count
+FROM `kabu-376213.kabu2411.m30_signal_bins` curr
+LEFT JOIN `kabu-376213.kabu2411.m30_signal_bins_backup_20250703` prev
+  ON curr.signal_type = prev.signal_type 
+  AND curr.signal_bin = prev.signal_bin
+WHERE curr.signal_bin IN (5, 10, 15, 20)  -- 代表的な分位点のみ表示
+  AND prev.signal_type IS NOT NULL  -- 共通指標のみ
+ORDER BY curr.signal_type, curr.signal_bin
+LIMIT 20;
 
 -- ============================================================================
--- 6. Phase 3完了確認
+-- 6. Phase 3完了確認（17指標版）
 -- ============================================================================
 
 SELECT 
-  '🎉 Phase 3 完了確認' as final_check,
-  COUNT(DISTINCT signal_type) as signal_types_27_expected,
-  COUNT(*) as total_bins_540_expected,
+  '🎉 Phase 3 完了確認（17指標版）' as final_check,
+  COUNT(DISTINCT signal_type) as signal_types_17_expected,
+  COUNT(*) as total_bins_340_expected,
   MIN(sample_count) as min_sample_count,
   AVG(sample_count) as avg_sample_count,
-  'Phase 3: m30_signal_bins 再計算完了' as status,
-  CURRENT_TIMESTAMP('Asia/Tokyo') as completion_time
+  'Phase 3: m30_signal_bins 再計算完了（17指標版）' as status,
+  CURRENT_TIMESTAMP() as completion_time
+FROM `kabu-376213.kabu2411.m30_signal_bins`;
+
+-- 独自指標戦略の準備完了確認
+SELECT 
+  '🚀 独自指標戦略準備完了' as strategy_check,
+  COUNT(CASE WHEN signal_type LIKE '%High_Price_Score%' OR signal_type LIKE '%Low_Price_Score%' THEN 1 END) as new_indicators_count,
+  COUNT(CASE WHEN NOT (signal_type LIKE '%High_Price_Score%' OR signal_type LIKE '%Low_Price_Score%') THEN 1 END) as existing_indicators_count,
+  '新指標による市場効率化回避戦略' as purpose,
+  'Phase 7劣化15-17%の改善を期待' as target_improvement
 FROM `kabu-376213.kabu2411.m30_signal_bins`;
 
 -- 次Phase準備確認
 SELECT 
   '📋 Phase 4準備確認' as next_phase,
-  '✅ m30_signal_bins (Phase 3完了)' as completed,
-  '⚡ d15_signals_with_bins (Phase 4実行予定)' as next_target,
-  '依存: d10_simple_signals + m30_signal_bins' as dependencies;
+  '✅ m30_signal_bins (Phase 3完了・17指標版)' as completed,
+  '⚡ d15_signals_with_bins (Phase 4実行予定・17指標版)' as next_target,
+  '依存: d10_simple_signals + m30_signal_bins (共に17指標版)' as dependencies;
