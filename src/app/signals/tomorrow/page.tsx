@@ -31,7 +31,10 @@ interface ApiResponse {
   pagination?: Pagination;
   metadata?: {
     query_time: string;
-    target_date: string;
+    source_table?: string;
+    optimization?: string;
+    description?: string;
+    target_date?: string; // 後方互換性のため残す
   };
 }
 
@@ -181,9 +184,21 @@ export default function TomorrowSignalsPage() {
             <div className="flex items-center space-x-3 text-sm">
               {metadata && (
                 <>
-                  <span className="font-medium text-gray-900">{metadata.target_date}</span>
+                  {/* 日付表示: target_date（旧API）または現在日付 */}
+                  <span className="font-medium text-gray-900">
+                    {metadata.target_date || new Date().toISOString().split('T')[0]}
+                  </span>
                   <span className="text-gray-600">|</span>
                   <span className="text-gray-600">{pagination?.total || 0}件</span>
+                  {/* 最適化情報表示 */}
+                  {metadata.optimization && (
+                    <>
+                      <span className="text-gray-600">|</span>
+                      <span className="text-green-600 font-medium text-xs">
+                        ⚡ {metadata.optimization}
+                      </span>
+                    </>
+                  )}
                   {metadata.query_time && (
                     <>
                       <span className="text-gray-600">|</span>
