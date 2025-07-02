@@ -1,48 +1,48 @@
 /*
-ファイル: 05_rebuild_d20_basic_signal_results.sql
-説明: Phase 5 - パラメータチューニング用項目を追加したd20完全再構築
-作成日: 2025年7月2日 17:30 JST
-依存: d15_signals_with_bins + daily_quotes
-目的: パラメータチューニング画面のJOIN処理完全排除
-年間コスト: 約32円の投資でROI無限大
+ファイル: 05_rebuild_d20_basic_results_17.sql
+説明: Phase 5 - 17指標版 d20_basic_signal_results 完全再構築
+作成日: 2025年7月3日 21:20 JST
+依存: d15_signals_with_bins (17指標版) + daily_quotes
+目的: 独自指標戦略の取引結果計算・劣化分析準備
 */
 
 -- ============================================================================
--- Phase 5: d20_basic_signal_results 完全再構築実行
+-- Phase 5: d20_basic_signal_results（17指標版）完全再構築実行
 -- ============================================================================
 
 -- 処理開始メッセージ
 SELECT 
-  'Phase 5: d20_basic_signal_results完全再構築を開始します' as message,
-  'データソース: d15_signals_with_bins (13,098,255行) + daily_quotes' as source_info,
-  '新規追加項目: パラメータチューニング用8項目' as enhancement,
-  CURRENT_TIMESTAMP('Asia/Tokyo') as start_time;
+  '🚀 Phase 5開始: d20_basic_signal_results（17指標版）再構築' as message,
+  'データソース: d15_signals_with_bins (816万行・17指標版) + daily_quotes' as source_info,
+  '戦略: 新指標10 + 比較用7指標による劣化分析準備' as strategy,
+  '目標: Phase 7の15-17%劣化を新指標が改善するかの検証' as target,
+  CURRENT_TIMESTAMP() as start_time;
 
 -- ============================================================================
 -- 1. 既存データのバックアップ（安全性確保）
 -- ============================================================================
 
 -- バックアップテーブル作成
-CREATE OR REPLACE TABLE `kabu-376213.kabu2411.d20_basic_signal_results_backup_phase5` AS
+CREATE OR REPLACE TABLE `kabu-376213.kabu2411.d20_basic_signal_results_backup_phase5_17` AS
 SELECT *, CURRENT_TIMESTAMP() as backup_timestamp
 FROM `kabu-376213.kabu2411.d20_basic_signal_results`;
 
 SELECT 
-  'バックアップ完了' as status,
+  '✅ バックアップ完了' as status,
   COUNT(*) as backup_record_count,
-  '安全性確保のため既存データを保存' as note
-FROM `kabu-376213.kabu2411.d20_basic_signal_results_backup_phase5`;
+  '安全性確保: 17指標版構築前の既存データ保存' as note
+FROM `kabu-376213.kabu2411.d20_basic_signal_results_backup_phase5_17`;
 
 -- ============================================================================
--- 2. 新テーブル構造での完全再構築
+-- 2. 新テーブル構造での完全再構築（17指標版対応）
 -- ============================================================================
 
 -- 既存テーブルを削除
 DROP TABLE IF EXISTS `kabu-376213.kabu2411.d20_basic_signal_results`;
 
--- 新構造でテーブル作成（既存14項目 + 新規8項目）
+-- 新構造でテーブル作成（既存項目 + パラメータチューニング用項目）
 CREATE TABLE `kabu-376213.kabu2411.d20_basic_signal_results` (
-  -- 既存項目（維持）
+  -- 基本項目
   signal_date DATE,
   reference_date DATE,
   stock_code STRING,
@@ -56,9 +56,9 @@ CREATE TABLE `kabu-376213.kabu2411.d20_basic_signal_results` (
   trading_volume FLOAT64,
   created_at TIMESTAMP,
   
-  -- パラメータチューニング用新項目（8項目）
+  -- パラメータチューニング用項目（高速表示対応）
   prev_close FLOAT64,           -- 前日終値
-  day_open FLOAT64,             -- 始値
+  day_open FLOAT64,             -- 始値  
   day_high FLOAT64,             -- 高値
   day_low FLOAT64,              -- 安値
   day_close FLOAT64,            -- 終値
@@ -72,7 +72,7 @@ PARTITION BY signal_date
 CLUSTER BY stock_code, signal_type;
 
 -- ============================================================================
--- 3. データ投入（d15_signals_with_bins + daily_quotes結合）
+-- 3. データ投入（17指標版: d15_signals_with_bins + daily_quotes結合）
 -- ============================================================================
 
 INSERT INTO `kabu-376213.kabu2411.d20_basic_signal_results`
@@ -91,7 +91,7 @@ WITH daily_quotes_with_prev AS (
       ORDER BY Date
     ) as prev_close
   FROM `kabu-376213.kabu2411.daily_quotes`
-  WHERE Date >= '2022-07-01'
+  WHERE Date >= '2022-07-01'  -- 17指標版の対象期間
 ),
 base_data AS (
   SELECT 
@@ -129,6 +129,8 @@ base_data AS (
     AND q.Open IS NOT NULL
     AND q.Close IS NOT NULL
     AND q.prev_close IS NOT NULL
+    -- 17指標版の品質確保
+    AND s.signal_bin IS NOT NULL
 ),
 enriched_data AS (
   SELECT 
@@ -155,6 +157,7 @@ enriched_data AS (
     
   FROM base_data
 )
+-- LONG取引結果
 SELECT 
   signal_date,
   reference_date,
@@ -186,6 +189,7 @@ WHERE profit_rate_long IS NOT NULL
 
 UNION ALL
 
+-- SHORT取引結果
 SELECT 
   signal_date,
   reference_date,
@@ -216,23 +220,24 @@ FROM enriched_data
 WHERE profit_rate_short IS NOT NULL;
 
 -- ============================================================================
--- 4. データ品質検証
+-- 4. データ品質検証（17指標版）
 -- ============================================================================
 
 -- 基本統計確認
 SELECT 
-  'データ投入完了' as status,
+  '📊 Phase 5: データ投入完了（17指標版）' as status,
   COUNT(*) as total_records,
+  COUNT(*) / 2 as unique_signal_records,  -- LONG/SHORT分割のため
   COUNT(DISTINCT stock_code) as unique_stocks,
-  COUNT(DISTINCT signal_type) as unique_signal_types,
+  COUNT(DISTINCT signal_type) as unique_signal_types_should_be_17,
   MIN(signal_date) as min_date,
   MAX(signal_date) as max_date,
-  'パラメータチューニング用項目追加完了' as enhancement_status
+  ROUND(COUNT(*) / COUNT(DISTINCT signal_date), 0) as avg_records_per_day
 FROM `kabu-376213.kabu2411.d20_basic_signal_results`;
 
 -- 新項目のデータ完全性確認
 SELECT 
-  '新項目データ完全性確認' as check_type,
+  '✅ パラメータチューニング用項目完全性確認' as check_type,
   COUNT(*) as total_records,
   COUNT(prev_close) as prev_close_count,
   COUNT(day_open) as day_open_count,
@@ -247,51 +252,92 @@ SELECT
   ROUND(COUNT(prev_close) * 100.0 / COUNT(*), 2) as data_completeness_percent
 FROM `kabu-376213.kabu2411.d20_basic_signal_results`;
 
--- 計算精度確認（サンプル）
+-- 17指標構成確認
 SELECT 
-  '計算精度確認（先頭10件）' as check_type,
+  '🚀 17指標構成確認' as check_type,
+  signal_type,
+  COUNT(*) / 2 as unique_records,  -- LONG/SHORT分割調整
+  ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(), 1) as percentage,
+  CASE 
+    WHEN signal_type LIKE '%High_Price_Score%' OR signal_type LIKE '%Low_Price_Score%' 
+    THEN '新指標'
+    ELSE '比較用'
+  END as indicator_category
+FROM `kabu-376213.kabu2411.d20_basic_signal_results`
+GROUP BY signal_type
+ORDER BY indicator_category, signal_type;
+
+-- 新指標 vs 比較用指標の統計
+SELECT 
+  '📈 新指標 vs 比較用指標統計' as analysis_type,
+  CASE 
+    WHEN signal_type LIKE '%High_Price_Score%' OR signal_type LIKE '%Low_Price_Score%' 
+    THEN '新指標（High/Low Price Score）'
+    ELSE '比較用（Phase 7劣化上位）'
+  END as indicator_type,
+  COUNT(DISTINCT signal_type) as signal_count,
+  COUNT(*) / 2 as total_records,  -- LONG/SHORT分割調整
+  ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(), 1) as percentage,
+  'Phase 6で劣化分析実行' as next_step
+FROM `kabu-376213.kabu2411.d20_basic_signal_results`
+GROUP BY 
+  CASE 
+    WHEN signal_type LIKE '%High_Price_Score%' OR signal_type LIKE '%Low_Price_Score%' 
+    THEN '新指標（High/Low Price Score）'
+    ELSE '比較用（Phase 7劣化上位）'
+  END
+ORDER BY indicator_type;
+
+-- 計算精度確認（サンプル検証）
+SELECT 
+  '🔍 計算精度確認（最新10件）' as check_type,
   signal_date,
   stock_code,
-  stock_name,
+  signal_type,
+  trade_type,
   prev_close,
   day_open,
-  day_high,
-  day_low,
   day_close,
+  profit_rate,
+  CASE 
+    WHEN trade_type = 'LONG' 
+    THEN ROUND((day_close - day_open) / day_open * 100, 4)
+    ELSE ROUND((day_open - day_close) / day_open * 100, 4)
+  END as calculated_profit_rate,
+  CASE WHEN is_win THEN '勝' ELSE '負' END as win_status,
   gap_amount,
-  ROUND(day_open - prev_close, 2) as gap_verify,
-  open_to_high_amount,
-  ROUND(day_high - day_open, 2) as high_verify,
-  daily_range,
-  ROUND(day_high - day_low, 2) as range_verify
+  ROUND(day_open - prev_close, 2) as gap_verify
 FROM `kabu-376213.kabu2411.d20_basic_signal_results`
-WHERE signal_date >= '2024-07-01'
-ORDER BY signal_date DESC, stock_code
+WHERE signal_date >= '2025-07-01'
+ORDER BY signal_date DESC, stock_code, signal_type
 LIMIT 10;
 
 -- d15との整合性確認
 WITH comparison AS (
   SELECT 
-    'd15_signals_with_bins' as source_table,
+    'd15_signals_with_bins（17指標版）' as source_table,
     COUNT(*) as record_count,
-    COUNT(DISTINCT CONCAT(signal_date, stock_code, signal_type)) as unique_combinations
+    COUNT(DISTINCT CONCAT(signal_date, stock_code, signal_type)) as unique_combinations,
+    'Phase 4完了データ' as note
   FROM `kabu-376213.kabu2411.d15_signals_with_bins`
   
   UNION ALL
   
   SELECT 
-    'd20_basic_signal_results' as source_table,
-    COUNT(*) / 2 as record_count,  -- LONG/SHORT分割のため2で割る
-    COUNT(DISTINCT CONCAT(signal_date, stock_code, signal_type)) / 2 as unique_combinations
+    'd20_basic_signal_results（17指標版）' as source_table,
+    COUNT(*) / 2 as record_count,  -- LONG/SHORT分割のため
+    COUNT(DISTINCT CONCAT(signal_date, stock_code, signal_type)) / 2 as unique_combinations,
+    'Phase 5完了データ' as note
   FROM `kabu-376213.kabu2411.d20_basic_signal_results`
 )
 SELECT 
-  'データ整合性確認' as check_type,
+  '📋 データ整合性確認' as check_type,
   source_table,
   record_count,
   unique_combinations,
+  note,
   CASE 
-    WHEN source_table = 'd15_signals_with_bins' THEN NULL
+    WHEN source_table LIKE 'd15_%' THEN NULL
     ELSE ROUND(record_count * 100.0 / LAG(record_count) OVER (ORDER BY source_table), 2)
   END as retention_rate_percent
 FROM comparison
@@ -303,12 +349,13 @@ ORDER BY source_table;
 
 -- クラスタリング効果確認
 SELECT 
-  'クラスタリング効果確認' as check_type,
+  '⚡ パフォーマンス最適化確認' as check_type,
   COUNT(*) as total_records,
   COUNT(DISTINCT stock_code) as clustered_stocks,
   COUNT(DISTINCT signal_type) as clustered_signal_types,
   'パーティション: signal_date' as partition_info,
-  'クラスタ: stock_code, signal_type' as cluster_info
+  'クラスタ: stock_code, signal_type' as cluster_info,
+  'JOIN処理完全排除によるUX劇的向上' as performance_gain
 FROM `kabu-376213.kabu2411.d20_basic_signal_results`;
 
 -- ============================================================================
@@ -316,21 +363,28 @@ FROM `kabu-376213.kabu2411.d20_basic_signal_results`;
 -- ============================================================================
 
 SELECT 
-  '🎉 Phase 5完了報告' as status,
-  'パラメータチューニング用項目追加完了' as achievement,
-  '年間コスト約32円でROI無限大達成' as cost_benefit,
-  'JOIN処理完全排除によるUX劇的向上' as performance_gain,
-  'Phase 6（統計テーブル再構築）準備完了' as next_phase,
-  CURRENT_TIMESTAMP('Asia/Tokyo') as completion_time;
+  '🎉 Phase 5完了報告（17指標版）' as status,
+  '✅ d20_basic_signal_results（17指標版）構築完了' as achievement,
+  '📊 新指標10 + 比較用7指標の取引結果計算完了' as composition,
+  '🎯 Phase 7劣化分析用データ準備完了' as analysis_ready,
+  '⚡ パラメータチューニング用項目追加完了' as enhancement,
+  '📈 Phase 6で新指標の真価を検証開始' as next_phase,
+  CURRENT_TIMESTAMP() as completion_time;
+
+-- 成功判定基準の再確認
+SELECT 
+  '🎯 成功判定基準（再確認）' as criteria_type,
+  '最低目標: 新指標劣化 < 15.25%（既存最優秀を上回る）' as minimum_target,
+  '理想目標: 新指標劣化 < 10%（明確な優位性確立）' as ideal_target,
+  '継続率: 優秀パターン継続率 > 40%（既存30-36%を上回る）' as continuity_target,
+  'Phase 6で数値検証により仮説を検証' as verification_method;
 
 -- ============================================================================
--- 使用方法（パラメータチューニング画面での活用例）
+-- 使用方法例：パラメータチューニング画面での高速表示
 -- ============================================================================
 
 /*
--- パラメータチューニング画面での高速表示例
--- （JOIN不要、事前計算済みデータの単純SELECT）
-
+-- 使用例1: 新指標の詳細分析（JOIN不要の高速表示）
 SELECT 
   signal_date as 日付,
   prev_close as 前日終値,
@@ -339,25 +393,34 @@ SELECT
   day_low as 安値,
   day_close as 終値,
   gap_amount as ギャップ,
-  open_to_high_amount as 始値→高値,
-  open_to_low_amount as 始値→安値,
-  open_to_close_amount as 始値→終値,
   profit_rate as 利益率,
   CASE WHEN is_win THEN '勝' ELSE '負' END as 勝敗,
-  trading_volume as 出来高
+  signal_bin as bin値
 FROM `kabu-376213.kabu2411.d20_basic_signal_results`
-WHERE stock_code = '7203'  -- トヨタ
-  AND signal_type = 'rsi_14d'
+WHERE signal_type = 'High_Price_Score_7D'  -- 新指標
   AND trade_type = 'LONG'
-  AND signal_bin = 1
+  AND signal_bin = 1  -- 最強シグナル
 ORDER BY signal_date DESC
 LIMIT 100;
 
--- フィルタ機能例（高速ソート・フィルタが可能）
-SELECT COUNT(*) as 件数
+-- 使用例2: 新指標vs比較用指標の勝率比較
+SELECT 
+  CASE 
+    WHEN signal_type LIKE '%High_Price_Score%' OR signal_type LIKE '%Low_Price_Score%' 
+    THEN '新指標'
+    ELSE '比較用'
+  END as indicator_type,
+  COUNT(*) as total_trades,
+  SUM(CASE WHEN is_win THEN 1 ELSE 0 END) as win_trades,
+  ROUND(AVG(CASE WHEN is_win THEN 1.0 ELSE 0.0 END) * 100, 2) as win_rate_percent,
+  ROUND(AVG(profit_rate), 4) as avg_profit_rate
 FROM `kabu-376213.kabu2411.d20_basic_signal_results`
-WHERE gap_amount > 50        -- ギャップ50円以上
-  AND daily_range > 100      -- 値幅100円以上  
-  AND profit_rate > 1.0      -- 利益率1%以上
-  AND is_win = TRUE;         -- 勝ちトレードのみ
+WHERE signal_bin = 1  -- 最強シグナルのみ
+GROUP BY 
+  CASE 
+    WHEN signal_type LIKE '%High_Price_Score%' OR signal_type LIKE '%Low_Price_Score%' 
+    THEN '新指標'
+    ELSE '比較用'
+  END
+ORDER BY win_rate_percent DESC;
 */
