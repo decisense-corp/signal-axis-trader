@@ -76,7 +76,24 @@ CLUSTER BY stock_code, signal_type;
 -- ============================================================================
 
 INSERT INTO `kabu-376213.kabu2411.d20_basic_signal_results`
-WITH base_data AS (
+WITH daily_quotes_with_prev AS (
+  -- 日付ベースで正しい前日終値を計算
+  SELECT 
+    Code,
+    Date,
+    Open,
+    High,
+    Low,
+    Close,
+    Volume,
+    LAG(Close) OVER (
+      PARTITION BY Code 
+      ORDER BY Date
+    ) as prev_close
+  FROM `kabu-376213.kabu2411.daily_quotes`
+  WHERE Date >= '2022-07-01'
+),
+base_data AS (
   SELECT 
     s.signal_date,
     s.reference_date,
@@ -92,11 +109,8 @@ WITH base_data AS (
     q.Low as day_low,
     q.Close as day_close,
     
-    -- 前日終値取得（signal_date前営業日の終値）
-    LAG(q.Close) OVER (
-      PARTITION BY s.stock_code 
-      ORDER BY s.signal_date
-    ) as prev_close,
+    -- 前日終値取得（正しい日付ベース）
+    q.prev_close,
     
     -- 出来高
     q.Volume as trading_volume,
@@ -107,13 +121,14 @@ WITH base_data AS (
   FROM `kabu-376213.kabu2411.d15_signals_with_bins` s
   INNER JOIN `kabu-376213.kabu2411.code_mapping` cm
     ON s.stock_code = cm.standard_code
-  INNER JOIN `kabu-376213.kabu2411.daily_quotes` q
+  INNER JOIN daily_quotes_with_prev q
     ON cm.original_code = q.Code 
     AND s.signal_date = q.Date
   WHERE s.signal_date IS NOT NULL
     AND q.Date IS NOT NULL
     AND q.Open IS NOT NULL
     AND q.Close IS NOT NULL
+    AND q.prev_close IS NOT NULL
 ),
 enriched_data AS (
   SELECT 
@@ -139,7 +154,6 @@ enriched_data AS (
     END as profit_rate_short
     
   FROM base_data
-  WHERE prev_close IS NOT NULL  -- 前日終値が必要
 )
 SELECT 
   signal_date,
