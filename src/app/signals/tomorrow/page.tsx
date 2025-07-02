@@ -190,15 +190,6 @@ export default function TomorrowSignalsPage() {
                   </span>
                   <span className="text-gray-600">|</span>
                   <span className="text-gray-600">{pagination?.total || 0}件</span>
-                  {/* 最適化情報表示 */}
-                  {metadata.optimization && (
-                    <>
-                      <span className="text-gray-600">|</span>
-                      <span className="text-green-600 font-medium text-xs">
-                        ⚡ {metadata.optimization}
-                      </span>
-                    </>
-                  )}
                   {metadata.query_time && (
                     <>
                       <span className="text-gray-600">|</span>
