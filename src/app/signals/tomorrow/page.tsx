@@ -1,168 +1,218 @@
-// src/app/signals/tomorrow/page.tsx
+// src/app/signals/tomorrow/[stock_code]/[trade_type]/config/[signal_type]/[bin]/page.tsx
 'use client';
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 
-interface TomorrowSignalCandidate {
-  stock_code: string;
-  stock_name: string;
-  trade_type: 'LONG' | 'SHORT';  // ✅ 'BUY'|'SELL' → 'LONG'|'SHORT'
-  max_win_rate: number;
-  max_expected_value: number;
-  excellent_pattern_count: number;
-  processing_status: string;
-  total_samples: number;
-  avg_win_rate: number;
-  avg_expected_return: number;
+interface PageProps {
+  params: Promise<{
+    stock_code: string;
+    trade_type: string;
+    signal_type: string;
+    bin: string;
+  }>;
 }
 
-interface Pagination {
-  total: number;
-  limit: number;
-  offset: number;
-  hasMore: boolean;
-}
-
-interface ApiResponse {
-  success: boolean;
-  data?: TomorrowSignalCandidate[];
-  error?: string;
-  pagination?: Pagination;
-  metadata?: {
-    query_time: string;
-    source_table?: string;
-    optimization?: string;
-    description?: string;
-    target_date?: string; // 後方互換性のため残す
+interface ConfigData {
+  signal_info: {
+    signal_type: string;
+    signal_bin: number;
+    trade_type: string;
+    stock_code: string;
+    stock_name: string;
   };
+  baseline_stats: {
+    total_samples: number;
+    win_rate: number;
+    avg_profit_rate: number;
+    sharpe_ratio: number;
+    median_profit_rate: number;
+    max_profit_rate: number;
+    min_profit_rate: number;
+  };
+  filtered_stats?: {
+    total_samples: number;
+    win_rate: number;
+    avg_profit_rate: number;
+    sharpe_ratio: number;
+    median_profit_rate: number;
+  };
+  learning_data: Array<{
+    signal_date: string;
+    entry_price: number;
+    exit_price: number;
+    profit_rate: number;
+    is_win: boolean;
+  }>;
 }
 
-export default function TomorrowSignalsPage() {
+export default function ConfigPage({ params }: PageProps) {
   const router = useRouter();
-  const [signals, setSignals] = useState<TomorrowSignalCandidate[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [metadata, setMetadata] = useState<any>(null);
-  const [pagination, setPagination] = useState<Pagination | null>(null);
   
-  // ページネーション設定
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  // ルートパラメータ
+  const [routeParams, setRouteParams] = useState<{
+    stock_code: string;
+    trade_type: string;
+    signal_type: string;
+    bin: string;
+  } | null>(null);
+  
+  // 設定値
+  const [profitTarget, setProfitTarget] = useState(0);
+  const [lossCut, setLossCut] = useState(0);
+  
+  // データとUI状態
+  const [configData, setConfigData] = useState<ConfigData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'stats' | 'data'>('stats');
 
+  // パラメータ解決
   useEffect(() => {
-    fetchSignals();
-  }, [currentPage, pageSize]);
+    const resolveParams = async () => {
+      try {
+        const resolvedParams = await params;
+        if (resolvedParams.stock_code && 
+            resolvedParams.trade_type && 
+            resolvedParams.signal_type && 
+            resolvedParams.bin) {
+          setRouteParams(resolvedParams);
+        } else {
+          setError('URLパラメータが不正です');
+          setLoading(false);
+        }
+      } catch (err) {
+        setError('パラメータの解決に失敗しました');
+        setLoading(false);
+      }
+    };
+    
+    resolveParams();
+  }, [params]);
 
-  const fetchSignals = async () => {
+  // データ取得
+  useEffect(() => {
+    if (routeParams) {
+      loadConfigData();
+    }
+  }, [routeParams, profitTarget, lossCut]);
+
+  const loadConfigData = async () => {
+    if (!routeParams) return;
+    
+    const { stock_code, trade_type, signal_type, bin } = routeParams;
+    if (!stock_code || !trade_type || !signal_type || !bin) {
+      setError('必要なパラメータが不足しています');
+      setLoading(false);
+      return;
+    }
+    
     try {
-      setLoading(true);
       setError(null);
       
-      const offset = (currentPage - 1) * pageSize;
-      const url = `/api/signals/tomorrow?limit=${pageSize}&offset=${offset}`;
+      const queryParams = new URLSearchParams();
+      if (profitTarget > 0) queryParams.set('profit_target_yen', profitTarget.toString());
+      if (lossCut > 0) queryParams.set('loss_cut_yen', lossCut.toString());
+      
+      const encodedSignalType = encodeURIComponent(signal_type);
+      const url = `/api/signals/tomorrow/${stock_code}/${trade_type}/config/${encodedSignalType}/${bin}?${queryParams}`;
       
       const response = await fetch(url);
-      const data: ApiResponse = await response.json();
+      const data = await response.json();
       
       if (data.success && data.data) {
-        setSignals(data.data);
-        setMetadata(data.metadata);
-        setPagination(data.pagination || null);
+        setConfigData(data.data);
       } else {
         setError(data.error || 'データの取得に失敗しました');
       }
     } catch (err) {
       setError('ネットワークエラーが発生しました');
-      console.error('API呼び出しエラー:', err);
     } finally {
       setLoading(false);
     }
   };
 
-  const getStatusBadge = (status: string) => {
-    const baseClasses = "inline-flex items-center px-1 py-0.5 rounded text-xs font-medium";
+  const handleSave = async () => {
+    if (!routeParams) return;
     
-    switch (status) {
-      case '未処理':
-        return `${baseClasses} bg-yellow-100 text-yellow-800`;
-      case '未（対象あり）':
-        return `${baseClasses} bg-yellow-100 text-yellow-800`;
-      case '済（対象あり）':
-        return `${baseClasses} bg-green-100 text-green-800`;
-      case '済（対象なし）':
-        return `${baseClasses} bg-gray-100 text-gray-800`;
-      default:
-        return `${baseClasses} bg-gray-100 text-gray-800`;
+    try {
+      setSaving(true);
+      
+      const response = await fetch('/api/decisions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          signal_type: routeParams.signal_type,
+          signal_bin: parseInt(routeParams.bin),
+          trade_type: routeParams.trade_type,
+          stock_code: routeParams.stock_code,
+          profit_target_yen: profitTarget,
+          loss_cut_yen: lossCut,
+          additional_notes: `設定日時: ${new Date().toLocaleString()}`
+        }),
+      });
+      
+      const result = await response.json();
+      
+      if (result.success) {
+        alert('設定が保存されました！');
+        router.push('/signals/tomorrow');
+      } else {
+        setError(result.error || '保存に失敗しました');
+      }
+    } catch (err) {
+      setError('保存中にエラーが発生しました');
+      console.error('保存エラー:', err);
+    } finally {
+      setSaving(false);
     }
   };
 
-  const getTradeTypeBadge = (tradeType: 'LONG' | 'SHORT') => {  // ✅ 型修正
-    const baseClasses = "inline-flex items-center px-1 py-0.5 rounded text-xs font-medium";
-    
-    if (tradeType === 'LONG') {  // ✅ LONG = 青色
-      return `${baseClasses} bg-blue-100 text-blue-800`;
-    } else {  // ✅ SHORT = 赤色
-      return `${baseClasses} bg-red-100 text-red-800`;
-    }
+  // 安全な数値表示
+  const safeNumber = (value: number | undefined, decimals = 2): string => {
+    if (typeof value !== 'number' || isNaN(value)) return '0.' + '0'.repeat(decimals);
+    return value.toFixed(decimals);
   };
 
-  // ページネーション計算
-  const totalPages = pagination ? Math.ceil(pagination.total / pageSize) : 1;
-  const startRecord = pagination ? pagination.offset + 1 : 0;
-  const endRecord = pagination ? Math.min(pagination.offset + pageSize, pagination.total) : 0;
-
-  const handlePageChange = (newPage: number) => {
-    if (newPage >= 1 && newPage <= totalPages) {
-      setCurrentPage(newPage);
-    }
-  };
-
-  const handlePageSizeChange = (newSize: number) => {
-    setPageSize(newSize);
-    setCurrentPage(1); // ページサイズ変更時は1ページ目に戻る
-  };
-
-  const handleConfigClick = (signal: TomorrowSignalCandidate) => {
-    router.push(`/signals/tomorrow/${signal.stock_code}/${signal.trade_type}`);
-  };
-
-  if (loading) {
+  // ローディング中（より厳密なチェック）
+  if (loading || 
+      !configData || 
+      !configData.baseline_stats || 
+      !configData.signal_info || 
+      !routeParams ||
+      typeof configData.baseline_stats.win_rate !== 'number' ||
+      typeof configData.baseline_stats.avg_profit_rate !== 'number') {
     return (
-      <div className="flex items-center justify-center min-h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
-        <div className="ml-4">
-          <p className="text-lg font-medium text-gray-900">読み込み中...</p>
-          <p className="text-sm text-gray-500">明日のシグナル候補を取得しています</p>
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-gray-600">読み込み中...</p>
         </div>
       </div>
     );
   }
 
+  // エラー表示
   if (error) {
     return (
-      <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-        <div className="flex">
-          <div className="flex-shrink-0">
-            <svg className="h-5 w-5 text-red-400" fill="currentColor" viewBox="0 0 20 20">
-              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-            </svg>
-          </div>
-          <div className="ml-3">
-            <h3 className="text-sm font-medium text-red-800">
-              エラーが発生しました
-            </h3>
-            <div className="mt-2 text-sm text-red-700">
-              <p>{error}</p>
-            </div>
-            <div className="mt-4">
-              <button
-                onClick={fetchSignals}
-                className="bg-red-100 text-red-800 px-3 py-1 rounded text-sm hover:bg-red-200"
-              >
-                再試行
-              </button>
-            </div>
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="max-w-md w-full bg-white rounded-lg shadow-lg p-6 text-center">
+          <h2 className="text-xl font-semibold text-red-600 mb-4">エラー</h2>
+          <p className="text-gray-700 mb-6">{error}</p>
+          <div className="space-y-3">
+            <button
+              onClick={() => loadConfigData()}
+              className="w-full bg-blue-600 text-white py-2 px-4 rounded hover:bg-blue-700"
+            >
+              再試行
+            </button>
+            <button
+              onClick={() => router.push('/signals/tomorrow')}
+              className="w-full bg-gray-300 text-gray-700 py-2 px-4 rounded hover:bg-gray-400"
+            >
+              一覧に戻る
+            </button>
           </div>
         </div>
       </div>
@@ -170,220 +220,243 @@ export default function TomorrowSignalsPage() {
   }
 
   return (
-    <div className="space-y-3">
-      {/* パンくずナビ + 情報バー（コンパクト） */}
-      <div className="sticky top-0 z-20 bg-white border-b border-gray-200 shadow-sm">
-        <div className="px-4 py-2">
-          {/* パンくずリスト */}
-          <nav className="flex items-center space-x-2 text-sm text-gray-500 mb-2">
-            <span className="text-gray-900 font-medium">明日のシグナル</span>
-          </nav>
+    <div className="min-h-screen bg-gray-50 p-4">
+      <div className="max-w-4xl mx-auto space-y-6">
+        
+        {/* ヘッダー */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h1 className="text-xl font-bold text-gray-900">4軸設定</h1>
+              <div className="flex items-center space-x-2 text-sm text-gray-600 mt-1">
+                <span>{configData.signal_info.signal_type}</span>
+                <span>•</span>
+                <span>Bin {configData.signal_info.signal_bin}</span>
+                <span>•</span>
+                <span className={`px-2 py-1 rounded text-xs font-medium ${
+                  configData.signal_info.trade_type === 'LONG' ? 'bg-blue-100 text-blue-800' : 'bg-red-100 text-red-800'
+                }`}>
+                  {configData.signal_info.trade_type}
+                </span>
+                <span>•</span>
+                <span>{configData.signal_info.stock_code} {configData.signal_info.stock_name}</span>
+              </div>
+            </div>
+            <div className="flex space-x-2">
+              <button
+                onClick={() => router.push('/signals/tomorrow')}
+                className="px-4 py-2 text-gray-600 bg-gray-100 rounded hover:bg-gray-200"
+              >
+                戻る
+              </button>
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+              >
+                {saving ? '保存中...' : '設定保存'}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* 設定フォーム */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+          <h3 className="text-lg font-medium text-gray-900 mb-4">取引条件設定</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                利確目標（円）
+              </label>
+              <input
+                type="number"
+                min="0"
+                max="1000"
+                value={profitTarget}
+                onChange={(e) => setProfitTarget(parseInt(e.target.value) || 0)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="0 = 設定なし"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                損切設定（円）
+              </label>
+              <input
+                type="number"
+                min="0"
+                max="1000"
+                value={lossCut}
+                onChange={(e) => setLossCut(parseInt(e.target.value) || 0)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="0 = 設定なし"
+              />
+            </div>
+          </div>
           
-          {/* 情報 + コントロール */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3 text-sm">
-              {metadata && (
-                <>
-                  {/* 日付表示: target_date（旧API）または現在日付 */}
-                  <span className="font-medium text-gray-900">
-                    {metadata.target_date || new Date().toISOString().split('T')[0]}
-                  </span>
-                  <span className="text-gray-600">|</span>
-                  <span className="text-gray-600">{pagination?.total || 0}件</span>
-                  {metadata.query_time && (
-                    <>
-                      <span className="text-gray-600">|</span>
-                      <span className="text-gray-600">
-                        更新: {new Date(metadata.query_time).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                    </>
-                  )}
-                </>
-              )}
-            </div>
+          <div className="mt-3 p-3 bg-blue-50 rounded text-sm">
+            <strong className="text-blue-900">現在の設定: </strong>
+            <span className="text-blue-700">
+              {profitTarget === 0 && lossCut === 0 ? '純粋な寄り引け取引' :
+               profitTarget > 0 && lossCut === 0 ? `利確${profitTarget}円のみ` :
+               profitTarget === 0 && lossCut > 0 ? `損切${lossCut}円のみ` :
+               `利確${profitTarget}円・損切${lossCut}円`}
+            </span>
+          </div>
+        </div>
+
+        {/* 統計表示 */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+          <h3 className="text-lg font-medium text-gray-900 mb-4">統計情報</h3>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             
-            {/* ページサイズ選択 */}
-            <div className="flex items-center space-x-2">
-              <label className="text-sm text-gray-600">表示:</label>
-              <select 
-                value={pageSize} 
-                onChange={(e) => handlePageSizeChange(Number(e.target.value))}
-                className="text-sm border border-gray-300 rounded px-2 py-1 bg-white"
-              >
-                <option value={25}>25</option>
-                <option value={50}>50</option>
-                <option value={100}>100</option>
-                <option value={200}>200</option>
-              </select>
-              {pagination && totalPages > 1 && (
-                <>
-                  <span className="text-gray-600">|</span>
-                  <span className="text-sm text-gray-600">
-                    {startRecord}〜{endRecord} / {pagination.total}
-                  </span>
-                </>
-              )}
+            {/* ベースライン統計 */}
+            <div className="bg-gray-50 rounded-lg p-4">
+              <h4 className="font-medium text-gray-900 mb-3">フィルタ前（全データ）</h4>
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span>サンプル数:</span>
+                  <span className="font-medium">{configData.baseline_stats.total_samples}件</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>勝率:</span>
+                  <span className="font-medium">{safeNumber(configData.baseline_stats.win_rate, 1)}%</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>平均利益率:</span>
+                  <span className="font-medium">{configData.baseline_stats.avg_profit_rate >= 0 ? '+' : ''}{safeNumber(configData.baseline_stats.avg_profit_rate)}%</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>シャープレシオ:</span>
+                  <span className="font-medium">{safeNumber(configData.baseline_stats.sharpe_ratio, 3)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>最大利益:</span>
+                  <span className="font-medium text-green-600">+{safeNumber(configData.baseline_stats.max_profit_rate)}%</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>最大損失:</span>
+                  <span className="font-medium text-red-600">{safeNumber(configData.baseline_stats.min_profit_rate)}%</span>
+                </div>
+              </div>
             </div>
+
+            {/* フィルタ後統計 */}
+            {configData.filtered_stats && (
+              <div className="bg-blue-50 rounded-lg p-4">
+                <h4 className="font-medium text-blue-900 mb-3">フィルタ後</h4>
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span>サンプル数:</span>
+                    <span className="font-medium">{configData.filtered_stats.total_samples}件</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>勝率:</span>
+                    <span className="font-medium text-blue-900">{safeNumber(configData.filtered_stats.win_rate, 1)}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>平均利益率:</span>
+                    <span className="font-medium text-blue-900">{configData.filtered_stats.avg_profit_rate >= 0 ? '+' : ''}{safeNumber(configData.filtered_stats.avg_profit_rate)}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>シャープレシオ:</span>
+                    <span className="font-medium text-blue-900">{safeNumber(configData.filtered_stats.sharpe_ratio, 3)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>差分:</span>
+                    <span className={`font-medium ${
+                      (configData.filtered_stats.avg_profit_rate - configData.baseline_stats.avg_profit_rate) >= 0 
+                        ? 'text-green-600' : 'text-red-600'
+                    }`}>
+                      {(configData.filtered_stats.avg_profit_rate - configData.baseline_stats.avg_profit_rate) >= 0 ? '+' : ''}
+                      {safeNumber(configData.filtered_stats.avg_profit_rate - configData.baseline_stats.avg_profit_rate)}%
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* タブ表示 */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200">
+          <div className="border-b border-gray-200">
+            <nav className="flex space-x-8 px-6">
+              <button
+                onClick={() => setActiveTab('stats')}
+                className={`py-4 px-1 border-b-2 font-medium text-sm ${
+                  activeTab === 'stats'
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                詳細統計
+              </button>
+              <button
+                onClick={() => setActiveTab('data')}
+                className={`py-4 px-1 border-b-2 font-medium text-sm ${
+                  activeTab === 'data'
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                取引データ（上位50件）
+              </button>
+            </nav>
+          </div>
+
+          <div className="p-6">
+            {activeTab === 'stats' && (
+              <div className="text-center text-gray-500">
+                統計の詳細表示機能は実装予定です
+              </div>
+            )}
+
+            {activeTab === 'data' && (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">取引日</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">エントリー</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">エグジット</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">損益率</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">結果</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {configData.learning_data.slice(0, 50).map((record, index) => (
+                      <tr key={index}>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          {new Date(record.signal_date).toLocaleDateString()}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          ¥{Math.round(record.entry_price).toLocaleString()}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          ¥{Math.round(record.exit_price).toLocaleString()}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm">
+                          <span className={record.profit_rate >= 0 ? 'text-green-600' : 'text-red-600'}>
+                            {record.profit_rate >= 0 ? '+' : ''}{safeNumber(record.profit_rate)}%
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className={`px-2 py-1 text-xs font-semibold rounded-full ${
+                            record.is_win ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                          }`}>
+                            {record.is_win ? '勝' : '負'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       </div>
-
-      {/* データテーブル（コンパクト） */}
-      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-        {signals.length === 0 ? (
-          <div className="px-6 py-8 text-center">
-            <p className="text-gray-500">明日のシグナル候補がありません</p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">コード</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">銘柄名</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">売買</th>
-                  <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">最高勝率</th>
-                  <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">最高期待値</th>
-                  <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">優秀数</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">状況</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">アクション</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {signals.map((signal, index) => (
-                  <tr key={`${signal.stock_code}-${signal.trade_type}`} className="hover:bg-gray-50">
-                    <td className="px-3 py-2 whitespace-nowrap text-sm font-medium text-gray-900">
-                      {signal.stock_code}
-                    </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-900">
-                      {signal.stock_name}
-                    </td>
-                    <td className="px-3 py-2 whitespace-nowrap">
-                      <span className={getTradeTypeBadge(signal.trade_type)}>
-                        {signal.trade_type}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-900 text-right">
-                      {signal.max_win_rate?.toFixed(1) || '0.0'}%
-                    </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-900 text-right">
-                      {signal.max_expected_value > 0 ? '+' : ''}{signal.max_expected_value?.toFixed(1) || '0.0'}%
-                    </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-900 text-right">
-                      {signal.excellent_pattern_count || 0}個
-                    </td>
-                    <td className="px-3 py-2 whitespace-nowrap">
-                      <span className={getStatusBadge(signal.processing_status)}>
-                        {signal.processing_status}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-sm font-medium">
-                      <button
-                        className="text-blue-600 hover:text-blue-900 transition-colors"
-                        onClick={() => handleConfigClick(signal)}
-                      >
-                        設定
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* ページネーション（コンパクト） */}
-      {pagination && totalPages > 1 && (
-        <div className="bg-white border border-gray-200 rounded-lg px-3 py-2">
-          <div className="flex items-center justify-between">
-            {/* モバイル用シンプルナビゲーション */}
-            <div className="flex sm:hidden">
-              <button
-                onClick={() => handlePageChange(currentPage - 1)}
-                disabled={currentPage <= 1}
-                className="px-3 py-1 border border-gray-300 text-sm rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                前
-              </button>
-              <span className="mx-2 text-sm text-gray-700">{currentPage}/{totalPages}</span>
-              <button
-                onClick={() => handlePageChange(currentPage + 1)}
-                disabled={currentPage >= totalPages}
-                className="px-3 py-1 border border-gray-300 text-sm rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                次
-              </button>
-            </div>
-            
-            {/* PC用詳細ナビゲーション */}
-            <div className="hidden sm:flex items-center space-x-1">
-              <button
-                onClick={() => handlePageChange(1)}
-                disabled={currentPage <= 1}
-                className="px-2 py-1 border border-gray-300 bg-white text-sm text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed rounded-l"
-              >
-                最初
-              </button>
-              
-              <button
-                onClick={() => handlePageChange(currentPage - 1)}
-                disabled={currentPage <= 1}
-                className="px-2 py-1 border border-gray-300 bg-white text-sm text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                ←
-              </button>
-
-              {/* ページ番号（コンパクト） */}
-              {(() => {
-                const pages = [];
-                const startPage = Math.max(1, currentPage - 2);
-                const endPage = Math.min(totalPages, currentPage + 2);
-                
-                for (let i = startPage; i <= endPage; i++) {
-                  pages.push(
-                    <button
-                      key={i}
-                      onClick={() => handlePageChange(i)}
-                      className={`px-2 py-1 border text-sm ${
-                        i === currentPage
-                          ? 'bg-blue-50 border-blue-500 text-blue-600'
-                          : 'bg-white border-gray-300 text-gray-500 hover:bg-gray-50'
-                      }`}
-                    >
-                      {i}
-                    </button>
-                  );
-                }
-                
-                return pages;
-              })()}
-
-              <button
-                onClick={() => handlePageChange(currentPage + 1)}
-                disabled={currentPage >= totalPages}
-                className="px-2 py-1 border border-gray-300 bg-white text-sm text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                →
-              </button>
-              
-              <button
-                onClick={() => handlePageChange(totalPages)}
-                disabled={currentPage >= totalPages}
-                className="px-2 py-1 border border-gray-300 bg-white text-sm text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed rounded-r"
-              >
-                最後
-              </button>
-            </div>
-
-            <div className="hidden sm:block">
-              <span className="text-sm text-gray-700">
-                ページ {currentPage} / {totalPages}
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
