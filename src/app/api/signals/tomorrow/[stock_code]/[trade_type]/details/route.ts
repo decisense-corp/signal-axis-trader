@@ -43,10 +43,10 @@ export async function GET(request: NextRequest, context: RouteContext) {
     }
     
     const normalizedTradeType = trade_type.toUpperCase();
-    if (!['BUY', 'SELL'].includes(normalizedTradeType)) {
+    if (!['LONG', 'SHORT'].includes(normalizedTradeType)) {  // ✅ LONG/SHORT に修正
       return NextResponse.json({
         success: false,
-        error: 'trade_type は BUY または SELL である必要があります'
+        error: 'trade_type は LONG または SHORT である必要があります'  // ✅ メッセージも修正
       }, { status: 400 });
     }
 

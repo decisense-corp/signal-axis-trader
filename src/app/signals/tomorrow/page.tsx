@@ -7,7 +7,7 @@ import { useRouter } from 'next/navigation';
 interface TomorrowSignalCandidate {
   stock_code: string;
   stock_name: string;
-  trade_type: 'BUY' | 'SELL';
+  trade_type: 'LONG' | 'SHORT';  // ✅ 'BUY'|'SELL' → 'LONG'|'SHORT'
   max_win_rate: number;
   max_expected_value: number;
   excellent_pattern_count: number;
@@ -97,12 +97,12 @@ export default function TomorrowSignalsPage() {
     }
   };
 
-  const getTradeTypeBadge = (tradeType: 'BUY' | 'SELL') => {
+  const getTradeTypeBadge = (tradeType: 'LONG' | 'SHORT') => {  // ✅ 型修正
     const baseClasses = "inline-flex items-center px-1 py-0.5 rounded text-xs font-medium";
     
-    if (tradeType === 'BUY') {
+    if (tradeType === 'LONG') {  // ✅ LONG = 青色
       return `${baseClasses} bg-blue-100 text-blue-800`;
-    } else {
+    } else {  // ✅ SHORT = 赤色
       return `${baseClasses} bg-red-100 text-red-800`;
     }
   };

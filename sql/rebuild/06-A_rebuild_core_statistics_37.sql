@@ -82,7 +82,7 @@ learning_stats AS (
     signal_bin,
     trade_type,
     stock_code,
-    stock_name,
+    ANY_VALUE(stock_name) as stock_name,
     COUNT(*) as total_signals,
     SUM(CASE WHEN is_win = true THEN 1 ELSE 0 END) as win_signals,
     ROUND(AVG(CASE WHEN is_win = true THEN 1.0 ELSE 0.0 END) * 100, 1) as win_rate,
@@ -90,7 +90,7 @@ learning_stats AS (
     ROUND(STDDEV(profit_rate), 4) as std_deviation,
     ROUND(SAFE_DIVIDE(AVG(profit_rate), NULLIF(STDDEV(profit_rate), 0)), 3) as sharpe_ratio
   FROM learning_period_data
-  GROUP BY signal_type, signal_bin, trade_type, stock_code, stock_name
+  GROUP BY signal_type, signal_bin, trade_type, stock_code
 )
 SELECT 
   lpd.*,
@@ -187,7 +187,7 @@ WITH learning_stats AS (
     signal_bin,
     trade_type,
     stock_code,
-    stock_name,
+    ANY_VALUE(stock_name) as stock_name,
     COUNT(*) as learning_total_signals,
     SUM(CASE WHEN is_win = true THEN 1 ELSE 0 END) as learning_win_signals,
     ROUND(AVG(CASE WHEN is_win = true THEN 1.0 ELSE 0.0 END) * 100, 1) as learning_win_rate,
@@ -198,7 +198,7 @@ WITH learning_stats AS (
     MAX(signal_date) as learning_last_signal
   FROM `kabu-376213.kabu2411.d20_basic_signal_results`
   WHERE signal_date <= '2024-06-30'
-  GROUP BY signal_type, signal_bin, trade_type, stock_code, stock_name
+  GROUP BY signal_type, signal_bin, trade_type, stock_code
 ),
 verification_stats AS (
   -- 検証期間統計（2024/7/1〜）
@@ -207,7 +207,7 @@ verification_stats AS (
     signal_bin,
     trade_type,
     stock_code,
-    stock_name,
+    ANY_VALUE(stock_name) as stock_name,
     COUNT(*) as verification_total_signals,
     SUM(CASE WHEN is_win = true THEN 1 ELSE 0 END) as verification_win_signals,
     ROUND(AVG(CASE WHEN is_win = true THEN 1.0 ELSE 0.0 END) * 100, 1) as verification_win_rate,
@@ -218,7 +218,7 @@ verification_stats AS (
     MAX(signal_date) as verification_last_signal
   FROM `kabu-376213.kabu2411.d20_basic_signal_results`
   WHERE signal_date > '2024-06-30'
-  GROUP BY signal_type, signal_bin, trade_type, stock_code, stock_name
+  GROUP BY signal_type, signal_bin, trade_type, stock_code
 ),
 combined_stats AS (
   SELECT 
