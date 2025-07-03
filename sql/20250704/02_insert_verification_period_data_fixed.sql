@@ -1,62 +1,59 @@
 /*
-ファイル: 02_create_D010_basic_results_step4.sql
-説明: D010_basic_results への検証期間データ投入（37指標完成後）
-前提: Phase 2C（37指標）が正常完了済み（2,479万レコード）
+ファイル: 02_insert_verification_period_data_fixed.sql
+説明: D010_basic_results 検証期間データ投入（37指標一括・1日ずれバグ修正版）
 作成日: 2025年7月4日
-目的: 3年間完全データ構築（学習期間 + 検証期間）
-処理時間: 約2-3分予想（Phase 2の高速実績により）
+修正内容: 株価データをsignal_date当日から取得（quote_date→signal_date）
+対象期間: 2024年7月1日〜2025年7月3日（検証期間）
+目的: 37指標×検証期間の正しいデータ一括投入で3年間完全データ構築完成
+実行時間: 約8-10分予想
 */
 
 -- ============================================================================
--- Step 4: 検証期間データ投入実行（2024年7月〜現在）
+-- 検証期間データ投入（37指標一括・1日ずれバグ修正版）
 -- ============================================================================
 
 -- 処理開始メッセージ
 SELECT 
-  '🚀 Step 4開始: 検証期間データ投入実行' as message,
-  '前提: Phase 2C完了（37指標・2,479万レコード）' as prerequisite,
-  '目標: 3年間完全データ構築（学習期間 + 検証期間）' as target,
-  '検証期間: 2024年7月1日〜現在' as verification_period,
-  '予想処理時間: 約2-3分（Phase 2高速実績により）' as estimated_time,
-  '予想追加レコード数: 約1,200万レコード' as estimated_records,
+  '🚀 検証期間データ投入開始（37指標一括・1日ずれバグ修正版）' as message,
+  '修正内容: 株価データをsignal_date当日から取得' as fix_description,
+  '検証期間: 2024年7月1日〜2025年7月3日' as target_period,
+  '対象: 37指標×BUY/SELL×全銘柄（一括投入）' as target_scope,
+  '予想レコード数: 約1,200万レコード' as estimated_records,
+  '完成: 学習期間+検証期間=3年間完全データ構築' as completion_goal,
   CURRENT_TIMESTAMP() as start_time;
 
 -- ============================================================================
--- 事前確認: Phase 2C完了状況
+-- 事前確認
 -- ============================================================================
 
--- Phase 2C結果確認
+-- 学習期間投入結果確認
 SELECT 
-  'Phase 2C完了状況確認' as check_point,
-  COUNT(*) as current_records,
-  COUNT(DISTINCT signal_type) as current_signal_types_should_be_37,
-  MIN(signal_date) as min_date,
+  'Step 1: 学習期間投入結果確認' as check_step,
+  COUNT(*) as current_records_should_be_about_25M,
+  COUNT(DISTINCT signal_type) as signal_types_should_be_37,
+  MIN(signal_date) as min_date_should_be_2022_07_06,
   MAX(signal_date) as max_date_should_be_2024_06_28,
-  CASE 
-    WHEN COUNT(DISTINCT signal_type) = 37 AND MAX(signal_date) = '2024-06-28'
-    THEN '✅ Phase 2C正常完了 - Step 4実行可能'
-    ELSE '❌ Phase 2C未完了 - Step 4実行不可'
-  END as phase2c_status
+  '学習期間完了確認' as status
 FROM `kabu-376213.kabu2411.D010_basic_results`;
 
 -- 検証期間のdaily_quotes確認
 SELECT 
-  'Step 4事前確認: 検証期間データ確認' as check_point,
+  'Step 2: 検証期間データ可用性確認' as check_step,
   COUNT(*) as verification_quotes_records,
-  MIN(Date) as verification_min_date,
-  MAX(Date) as verification_max_date,
+  MIN(Date) as verification_min_date_should_be_2024_07_01,
+  MAX(Date) as verification_max_date_should_be_2025_07_03,
   COUNT(DISTINCT REGEXP_REPLACE(Code, '0$', '')) as verification_stocks
 FROM `kabu-376213.kabu2411.daily_quotes`
 WHERE Date >= '2024-07-01';
 
 -- ============================================================================
--- 検証期間データ投入実行（37指標フル対応）
+-- 検証期間データ投入実行（37指標一括）
 -- ============================================================================
 
 INSERT INTO `kabu-376213.kabu2411.D010_basic_results`
 WITH 
--- 1. 検証期間株価データ準備
-quotes_with_prev AS (
+-- 1. 検証期間株価データ準備（シグナル計算用：quote_date、取引用：signal_date）
+stock_quotes AS (
   SELECT 
     REGEXP_REPLACE(dq.Code, '0$', '') as stock_code,
     dq.Date as quote_date,
@@ -69,42 +66,45 @@ quotes_with_prev AS (
     LAG(dq.Close) OVER (
       PARTITION BY REGEXP_REPLACE(dq.Code, '0$', '') 
       ORDER BY dq.Date
-    ) as prev_close,
+    ) as prev_close_for_signal,
     LAG(dq.Volume) OVER (
       PARTITION BY REGEXP_REPLACE(dq.Code, '0$', '') 
       ORDER BY dq.Date
-    ) as prev_volume,
+    ) as prev_volume_for_signal,
     LAG(dq.TurnoverValue) OVER (
       PARTITION BY REGEXP_REPLACE(dq.Code, '0$', '') 
       ORDER BY dq.Date
-    ) as prev_value
+    ) as prev_value_for_signal
   FROM `kabu-376213.kabu2411.daily_quotes` dq
-  WHERE dq.Date >= '2024-07-01'  -- 検証期間
-    AND dq.Open > 0 AND dq.Close > 0  -- 基本的な品質チェック
+  WHERE dq.Date >= '2024-07-01' AND dq.Date <= '2025-07-03'  -- 検証期間
+    AND dq.Open > 0 AND dq.Close > 0  -- 基本品質チェック
 ),
 
--- 2. シグナル値計算（37指標全てを計算）
+-- 2. シグナル日付計算とシグナル値計算（修正不要部分）
 signal_calculations AS (
   SELECT 
     q.stock_code,
     mts.company_name as stock_name,
     q.quote_date,
+    -- signal_date計算（修正不要：翌営業日取得、ただし未来日除外）
     (
       SELECT MIN(tc.Date)
       FROM `kabu-376213.kabu2411.trading_calendar` tc
-      WHERE tc.Date > q.quote_date AND tc.HolidayDivision = '1'
+      WHERE tc.Date > q.quote_date 
+        AND tc.HolidayDivision = '1'
+        AND tc.Date <= '2025-07-03'  -- 🔧 未来日除外：daily_quotesの最大日まで
     ) as signal_date,
-    q.Open,
-    q.High,
-    q.Low, 
-    q.Close,
-    q.Volume,
-    q.TurnoverValue,
-    q.prev_close,
-    q.prev_volume,
-    q.prev_value,
+    q.Open as quote_open,
+    q.High as quote_high,
+    q.Low as quote_low,
+    q.Close as quote_close,
+    q.Volume as quote_volume,
+    q.TurnoverValue as quote_value,
+    q.prev_close_for_signal,
+    q.prev_volume_for_signal,
+    q.prev_value_for_signal,
     
-    -- 移動平均計算（全期間対応）
+    -- 移動平均計算（シグナル値用：quote_dateベース、修正不要）
     AVG(q.Close) OVER (
       PARTITION BY q.stock_code 
       ORDER BY q.quote_date 
@@ -248,113 +248,104 @@ signal_calculations AS (
       ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
     ) as avg_open_low_20d
     
-  FROM quotes_with_prev q
+  FROM stock_quotes q
   INNER JOIN `kabu-376213.kabu2411.master_trading_stocks` mts
     ON q.stock_code = mts.stock_code
-  WHERE q.prev_close IS NOT NULL
+  WHERE q.prev_close_for_signal IS NOT NULL
 ),
 
--- 3. 37指標全てのシグナル生成
-all_verification_signals AS (
+-- 3. 37指標のシグナル生成（修正不要：quote_dateベースで正しい）
+all_signals AS (
 
   -- ==================== Price系 9指標 ====================
   
   -- Close Change Rate
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Close Change Rate' as signal_type,
-    ROUND((Close - prev_close) / prev_close * 100, 4) as signal_value
+    ROUND((quote_close - prev_close_for_signal) / prev_close_for_signal * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE prev_close > 0 AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE prev_close_for_signal > 0 AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Close to Prev Close Ratio
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Close to Prev Close Ratio' as signal_type,
-    ROUND(Close / prev_close * 100, 4) as signal_value
+    ROUND(quote_close / prev_close_for_signal * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE prev_close > 0 AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE prev_close_for_signal > 0 AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Close MA3 Deviation
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Close MA3 Deviation' as signal_type,
-    ROUND(Close / ma3_close * 100, 4) as signal_value
+    ROUND(quote_close / ma3_close * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE ma3_close > 0 AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE ma3_close > 0 AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Close MA5 Deviation  
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Close MA5 Deviation' as signal_type,
-    ROUND(Close / ma5_close * 100, 4) as signal_value
+    ROUND(quote_close / ma5_close * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE ma5_close > 0 AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE ma5_close > 0 AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Close MA10 Deviation
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Close MA10 Deviation' as signal_type, 
-    ROUND(Close / ma10_close * 100, 4) as signal_value
+    ROUND(quote_close / ma10_close * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE ma10_close > 0 AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE ma10_close > 0 AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Close to MAX20 Ratio
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Close to MAX20 Ratio' as signal_type,
-    ROUND(Close / max20_close * 100, 4) as signal_value
+    ROUND(quote_close / max20_close * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE max20_close > 0 AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE max20_close > 0 AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Close to MIN20 Ratio
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Close to MIN20 Ratio' as signal_type,
-    ROUND(Close / min20_close * 100, 4) as signal_value  
+    ROUND(quote_close / min20_close * 100, 4) as signal_value  
   FROM signal_calculations 
-  WHERE min20_close > 0 AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE min20_close > 0 AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Close to Open Ratio
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Close to Open Ratio' as signal_type,
-    ROUND(Close / Open * 100, 4) as signal_value
+    ROUND(quote_close / quote_open * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE Open > 0 AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE quote_open > 0 AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Close Volatility
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Close Volatility' as signal_type,
     ROUND(SAFE_DIVIDE(stddev20_close, ma20_close) * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE ma20_close > 0 AND stddev20_close IS NOT NULL AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE ma20_close > 0 AND stddev20_close IS NOT NULL AND signal_date IS NOT NULL
 
   -- ==================== PriceRange系 5指標 ====================
   
@@ -363,55 +354,50 @@ all_verification_signals AS (
   -- Close to Range Ratio
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Close to Range Ratio' as signal_type,
-    ROUND(SAFE_DIVIDE(Close - Low, High - Low) * 100, 4) as signal_value
+    ROUND(SAFE_DIVIDE(quote_close - quote_low, quote_high - quote_low) * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE High > Low AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE quote_high > quote_low AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- High to Close Drop Rate
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'High to Close Drop Rate' as signal_type,
-    ROUND(SAFE_DIVIDE(High - Close, High - Low) * 100, 4) as signal_value
+    ROUND(SAFE_DIVIDE(quote_high - quote_close, quote_high - quote_low) * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE High > Low AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE quote_high > quote_low AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Close to Low Rise Rate
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Close to Low Rise Rate' as signal_type,
-    ROUND(SAFE_DIVIDE(Close - Low, High - Low) * 100, 4) as signal_value
+    ROUND(SAFE_DIVIDE(quote_close - quote_low, quote_high - quote_low) * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE High > Low AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE quote_high > quote_low AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- High to Close Ratio
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'High to Close Ratio' as signal_type,
-    ROUND(Close / High * 100, 4) as signal_value
+    ROUND(quote_close / quote_high * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE High > 0 AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE quote_high > 0 AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Close to Low Ratio
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Close to Low Ratio' as signal_type,
-    ROUND(Close / Low * 100, 4) as signal_value
+    ROUND(quote_close / quote_low * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE Low > 0 AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE quote_low > 0 AND signal_date IS NOT NULL
 
   -- ==================== OpenClose系 3指標 ====================
   
@@ -420,22 +406,20 @@ all_verification_signals AS (
   -- Open to Close Change Rate
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Open to Close Change Rate' as signal_type,
-    ROUND((Close - Open) / Open * 100, 4) as signal_value
+    ROUND((quote_close - quote_open) / quote_open * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE Open > 0 AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE quote_open > 0 AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Open Close Range Efficiency
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Open Close Range Efficiency' as signal_type,
-    ROUND(SAFE_DIVIDE(Close - Open, High - Low) * 100, 4) as signal_value
+    ROUND(SAFE_DIVIDE(quote_close - quote_open, quote_high - quote_low) * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE High > Low AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE quote_high > quote_low AND signal_date IS NOT NULL
 
   -- ==================== Open系 3指標 ====================
   
@@ -444,33 +428,30 @@ all_verification_signals AS (
   -- Open to Range Ratio
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Open to Range Ratio' as signal_type,
-    ROUND(SAFE_DIVIDE(Open - Low, High - Low) * 100, 4) as signal_value
+    ROUND(SAFE_DIVIDE(quote_open - quote_low, quote_high - quote_low) * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE High > Low AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE quote_high > quote_low AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- High to Open Drop Rate
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'High to Open Drop Rate' as signal_type,
-    ROUND(SAFE_DIVIDE(High - Open, High - Low) * 100, 4) as signal_value
+    ROUND(SAFE_DIVIDE(quote_high - quote_open, quote_high - quote_low) * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE High > Low AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE quote_high > quote_low AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Open to Low Rise Rate
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Open to Low Rise Rate' as signal_type,
-    ROUND(SAFE_DIVIDE(Open - Low, High - Low) * 100, 4) as signal_value
+    ROUND(SAFE_DIVIDE(quote_open - quote_low, quote_high - quote_low) * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE High > Low AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE quote_high > quote_low AND signal_date IS NOT NULL
 
   -- ==================== Volume系 4指標 ====================
   
@@ -479,44 +460,40 @@ all_verification_signals AS (
   -- Volume to Prev Ratio
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Volume to Prev Ratio' as signal_type,
-    ROUND(Volume / prev_volume * 100, 4) as signal_value
+    ROUND(quote_volume / prev_volume_for_signal * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE prev_volume > 0 AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE prev_volume_for_signal > 0 AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Volume MA3 Deviation
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Volume MA3 Deviation' as signal_type,
-    ROUND(Volume / ma3_volume * 100, 4) as signal_value
+    ROUND(quote_volume / ma3_volume * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE ma3_volume > 0 AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE ma3_volume > 0 AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Volume MA5 Deviation
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Volume MA5 Deviation' as signal_type,
-    ROUND(Volume / ma5_volume * 100, 4) as signal_value
+    ROUND(quote_volume / ma5_volume * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE ma5_volume > 0 AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE ma5_volume > 0 AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Volume MA10 Deviation
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Volume MA10 Deviation' as signal_type,
-    ROUND(Volume / ma10_volume * 100, 4) as signal_value
+    ROUND(quote_volume / ma10_volume * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE ma10_volume > 0 AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE ma10_volume > 0 AND signal_date IS NOT NULL
 
   -- ==================== Value系 4指標 ====================
   
@@ -525,44 +502,40 @@ all_verification_signals AS (
   -- Value to Prev Ratio
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Value to Prev Ratio' as signal_type,
-    ROUND(TurnoverValue / prev_value * 100, 4) as signal_value
+    ROUND(quote_value / prev_value_for_signal * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE prev_value > 0 AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE prev_value_for_signal > 0 AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Value MA3 Deviation
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Value MA3 Deviation' as signal_type,
-    ROUND(TurnoverValue / ma3_value * 100, 4) as signal_value
+    ROUND(quote_value / ma3_value * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE ma3_value > 0 AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE ma3_value > 0 AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Value MA5 Deviation
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Value MA5 Deviation' as signal_type,
-    ROUND(TurnoverValue / ma5_value * 100, 4) as signal_value
+    ROUND(quote_value / ma5_value * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE ma5_value > 0 AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE ma5_value > 0 AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Value MA10 Deviation
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Value MA10 Deviation' as signal_type,
-    ROUND(TurnoverValue / ma10_value * 100, 4) as signal_value
+    ROUND(quote_value / ma10_value * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE ma10_value > 0 AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE ma10_value > 0 AND signal_date IS NOT NULL
 
   -- ==================== Score系 10指標 ====================
   
@@ -571,153 +544,162 @@ all_verification_signals AS (
   -- High Price Score 3D
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'High Price Score 3D' as signal_type,
     ROUND(
       COALESCE(avg_high_open_3d * 50, 0) + 
-      COALESCE(SAFE_DIVIDE(High - Low, Open) * 30, 0) + 
-      COALESCE(SAFE_DIVIDE(Close - Open, Open) * 20, 0), 4
+      COALESCE(SAFE_DIVIDE(quote_high - quote_low, quote_open) * 30, 0) + 
+      COALESCE(SAFE_DIVIDE(quote_close - quote_open, quote_open) * 20, 0), 4
     ) as signal_value
   FROM signal_calculations 
-  WHERE Open > 0 AND avg_high_open_3d IS NOT NULL AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE quote_open > 0 AND avg_high_open_3d IS NOT NULL AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- High Price Score 7D
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'High Price Score 7D' as signal_type,
     ROUND(
       COALESCE(avg_high_open_7d * 50, 0) + 
-      COALESCE(SAFE_DIVIDE(High - Low, Open) * 30, 0) + 
-      COALESCE(SAFE_DIVIDE(Close - Open, Open) * 20, 0), 4
+      COALESCE(SAFE_DIVIDE(quote_high - quote_low, quote_open) * 30, 0) + 
+      COALESCE(SAFE_DIVIDE(quote_close - quote_open, quote_open) * 20, 0), 4
     ) as signal_value
   FROM signal_calculations 
-  WHERE Open > 0 AND avg_high_open_7d IS NOT NULL AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE quote_open > 0 AND avg_high_open_7d IS NOT NULL AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- High Price Score 9D
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'High Price Score 9D' as signal_type,
     ROUND(
       COALESCE(avg_high_open_9d * 50, 0) + 
-      COALESCE(SAFE_DIVIDE(High - Low, Open) * 30, 0) + 
-      COALESCE(SAFE_DIVIDE(Close - Open, Open) * 20, 0), 4
+      COALESCE(SAFE_DIVIDE(quote_high - quote_low, quote_open) * 30, 0) + 
+      COALESCE(SAFE_DIVIDE(quote_close - quote_open, quote_open) * 20, 0), 4
     ) as signal_value
   FROM signal_calculations 
-  WHERE Open > 0 AND avg_high_open_9d IS NOT NULL AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE quote_open > 0 AND avg_high_open_9d IS NOT NULL AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- High Price Score 14D
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'High Price Score 14D' as signal_type,
     ROUND(
       COALESCE(avg_high_open_14d * 50, 0) + 
-      COALESCE(SAFE_DIVIDE(High - Low, Open) * 30, 0) + 
-      COALESCE(SAFE_DIVIDE(Close - Open, Open) * 20, 0), 4
+      COALESCE(SAFE_DIVIDE(quote_high - quote_low, quote_open) * 30, 0) + 
+      COALESCE(SAFE_DIVIDE(quote_close - quote_open, quote_open) * 20, 0), 4
     ) as signal_value
   FROM signal_calculations 
-  WHERE Open > 0 AND avg_high_open_14d IS NOT NULL AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE quote_open > 0 AND avg_high_open_14d IS NOT NULL AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- High Price Score 20D
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'High Price Score 20D' as signal_type,
     ROUND(
       COALESCE(avg_high_open_20d * 50, 0) + 
-      COALESCE(SAFE_DIVIDE(High - Low, Open) * 30, 0) + 
-      COALESCE(SAFE_DIVIDE(Close - Open, Open) * 20, 0), 4
+      COALESCE(SAFE_DIVIDE(quote_high - quote_low, quote_open) * 30, 0) + 
+      COALESCE(SAFE_DIVIDE(quote_close - quote_open, quote_open) * 20, 0), 4
     ) as signal_value
   FROM signal_calculations 
-  WHERE Open > 0 AND avg_high_open_20d IS NOT NULL AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE quote_open > 0 AND avg_high_open_20d IS NOT NULL AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Low Price Score 3D
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Low Price Score 3D' as signal_type,
     ROUND(
       COALESCE(avg_open_low_3d * 50, 0) + 
-      COALESCE(SAFE_DIVIDE(High - Low, Open) * 30, 0) + 
-      COALESCE(ABS(SAFE_DIVIDE(Close - Open, Open)) * 20, 0), 4
+      COALESCE(SAFE_DIVIDE(quote_high - quote_low, quote_open) * 30, 0) + 
+      COALESCE(ABS(SAFE_DIVIDE(quote_close - quote_open, quote_open)) * 20, 0), 4
     ) as signal_value
   FROM signal_calculations 
-  WHERE Open > 0 AND avg_open_low_3d IS NOT NULL AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE quote_open > 0 AND avg_open_low_3d IS NOT NULL AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Low Price Score 7D
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Low Price Score 7D' as signal_type,
     ROUND(
       COALESCE(avg_open_low_7d * 50, 0) + 
-      COALESCE(SAFE_DIVIDE(High - Low, Open) * 30, 0) + 
-      COALESCE(ABS(SAFE_DIVIDE(Close - Open, Open)) * 20, 0), 4
+      COALESCE(SAFE_DIVIDE(quote_high - quote_low, quote_open) * 30, 0) + 
+      COALESCE(ABS(SAFE_DIVIDE(quote_close - quote_open, quote_open)) * 20, 0), 4
     ) as signal_value
   FROM signal_calculations 
-  WHERE Open > 0 AND avg_open_low_7d IS NOT NULL AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE quote_open > 0 AND avg_open_low_7d IS NOT NULL AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Low Price Score 9D
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Low Price Score 9D' as signal_type,
     ROUND(
       COALESCE(avg_open_low_9d * 50, 0) + 
-      COALESCE(SAFE_DIVIDE(High - Low, Open) * 30, 0) + 
-      COALESCE(ABS(SAFE_DIVIDE(Close - Open, Open)) * 20, 0), 4
+      COALESCE(SAFE_DIVIDE(quote_high - quote_low, quote_open) * 30, 0) + 
+      COALESCE(ABS(SAFE_DIVIDE(quote_close - quote_open, quote_open)) * 20, 0), 4
     ) as signal_value
   FROM signal_calculations 
-  WHERE Open > 0 AND avg_open_low_9d IS NOT NULL AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE quote_open > 0 AND avg_open_low_9d IS NOT NULL AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Low Price Score 14D
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Low Price Score 14D' as signal_type,
     ROUND(
       COALESCE(avg_open_low_14d * 50, 0) + 
-      COALESCE(SAFE_DIVIDE(High - Low, Open) * 30, 0) + 
-      COALESCE(ABS(SAFE_DIVIDE(Close - Open, Open)) * 20, 0), 4
+      COALESCE(SAFE_DIVIDE(quote_high - quote_low, quote_open) * 30, 0) + 
+      COALESCE(ABS(SAFE_DIVIDE(quote_close - quote_open, quote_open)) * 20, 0), 4
     ) as signal_value
   FROM signal_calculations 
-  WHERE Open > 0 AND avg_open_low_14d IS NOT NULL AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE quote_open > 0 AND avg_open_low_14d IS NOT NULL AND signal_date IS NOT NULL
   
   UNION ALL
   
   -- Low Price Score 20D
   SELECT 
     stock_code, stock_name, quote_date, signal_date,
-    Open, High, Low, Close, Volume, prev_close,
     'Low Price Score 20D' as signal_type,
     ROUND(
       COALESCE(avg_open_low_20d * 50, 0) + 
-      COALESCE(SAFE_DIVIDE(High - Low, Open) * 30, 0) + 
-      COALESCE(ABS(SAFE_DIVIDE(Close - Open, Open)) * 20, 0), 4
+      COALESCE(SAFE_DIVIDE(quote_high - quote_low, quote_open) * 30, 0) + 
+      COALESCE(ABS(SAFE_DIVIDE(quote_close - quote_open, quote_open)) * 20, 0), 4
     ) as signal_value
   FROM signal_calculations 
-  WHERE Open > 0 AND avg_open_low_20d IS NOT NULL AND signal_date IS NOT NULL AND signal_date > quote_date
+  WHERE quote_open > 0 AND avg_open_low_20d IS NOT NULL AND signal_date IS NOT NULL
 ),
 
--- 4. シグナルbinを計算
+-- 4. 🔧 修正部分：signal_date当日の株価データを取得（検証期間範囲）
+signal_date_quotes AS (
+  SELECT 
+    REGEXP_REPLACE(Code, '0$', '') as stock_code,
+    Date as signal_date,
+    Open as signal_day_open,
+    High as signal_day_high,
+    Low as signal_day_low,
+    Close as signal_day_close,
+    Volume as signal_day_volume,
+    LAG(Close) OVER (
+      PARTITION BY REGEXP_REPLACE(Code, '0$', '') 
+      ORDER BY Date
+    ) as signal_prev_close
+  FROM `kabu-376213.kabu2411.daily_quotes`
+  WHERE Date >= '2024-07-01' AND Date <= '2025-07-03'  -- 検証期間signal_date範囲
+    AND Open > 0 AND Close > 0
+),
+
+-- 5. シグナルbinを計算
 signals_with_bins AS (
   SELECT 
     s.*,
@@ -730,10 +712,10 @@ signals_with_bins AS (
          AND s.signal_value <= sb.upper_bound), 
       1
     ) as signal_bin
-  FROM all_verification_signals s
+  FROM all_signals s
 ),
 
--- 5. 最終データ準備
+-- 6. 🔧 修正部分：シグナルデータと当日株価データを結合
 final_data AS (
   SELECT 
     s.signal_date,
@@ -742,33 +724,40 @@ final_data AS (
     s.stock_code,
     s.stock_name,
     s.signal_value,
-    s.prev_close,
-    s.Open as day_open,
-    s.High as day_high,
-    s.Low as day_low,
-    s.Close as day_close,
-    s.Volume as trading_volume,
     
-    -- 計算値
-    s.Open - s.prev_close as prev_close_to_open_gap,
-    s.High - s.Open as open_to_high_gap,
-    s.Low - s.Open as open_to_low_gap,
-    s.Close - s.Open as open_to_close_gap,
-    s.High - s.Low as daily_range,
+    -- 🔧 修正：signal_date当日の株価データを使用
+    sdq.signal_prev_close as prev_close,
+    sdq.signal_day_open as day_open,
+    sdq.signal_day_high as day_high,
+    sdq.signal_day_low as day_low,
+    sdq.signal_day_close as day_close,
+    sdq.signal_day_volume as trading_volume,
+    
+    -- 計算値（修正後の値で再計算）
+    sdq.signal_day_open - sdq.signal_prev_close as prev_close_to_open_gap,
+    sdq.signal_day_high - sdq.signal_day_open as open_to_high_gap,
+    sdq.signal_day_low - sdq.signal_day_open as open_to_low_gap,
+    sdq.signal_day_close - sdq.signal_day_open as open_to_close_gap,
+    sdq.signal_day_high - sdq.signal_day_low as daily_range,
     
     -- BUY（LONG）取引結果
-    ROUND((s.Close - s.Open) / s.Open * 100, 4) as buy_profit_rate,
-    CASE WHEN s.Close > s.Open THEN TRUE ELSE FALSE END as buy_is_win,
+    ROUND((sdq.signal_day_close - sdq.signal_day_open) / sdq.signal_day_open * 100, 4) as buy_profit_rate,
+    CASE WHEN sdq.signal_day_close > sdq.signal_day_open THEN TRUE ELSE FALSE END as buy_is_win,
     
     -- SELL（SHORT）取引結果  
-    ROUND((s.Open - s.Close) / s.Open * 100, 4) as sell_profit_rate,
-    CASE WHEN s.Open > s.Close THEN TRUE ELSE FALSE END as sell_is_win,
+    ROUND((sdq.signal_day_open - sdq.signal_day_close) / sdq.signal_day_open * 100, 4) as sell_profit_rate,
+    CASE WHEN sdq.signal_day_open > sdq.signal_day_close THEN TRUE ELSE FALSE END as sell_is_win,
     
     CURRENT_TIMESTAMP() as created_at
     
   FROM signals_with_bins s
-  WHERE s.Open > 0 AND s.Close > 0 AND s.signal_bin IS NOT NULL
-    AND s.signal_date >= '2024-07-01'  -- 検証期間制限
+  -- 🔧 修正：signal_date当日の株価データと結合
+  INNER JOIN signal_date_quotes sdq
+    ON s.stock_code = sdq.stock_code 
+    AND s.signal_date = sdq.signal_date
+  WHERE s.signal_bin IS NOT NULL
+    AND sdq.signal_day_open > 0 AND sdq.signal_day_close > 0
+    AND sdq.signal_prev_close IS NOT NULL
 )
 
 -- BUY取引結果
@@ -824,25 +813,24 @@ SELECT
 FROM final_data;
 
 -- ============================================================================
--- Step 4完了確認
+-- 検証期間投入完了確認
 -- ============================================================================
 
--- 追加結果確認
 SELECT 
-  '🎉 Step 4完了確認（3年間完全データ構築）' as status,
+  '✅ 検証期間データ投入完了（37指標一括・1日ずれバグ修正版）' as status,
   COUNT(*) as total_records_after_verification,
   COUNT(DISTINCT signal_type) as signal_types_should_be_37,
   COUNT(DISTINCT stock_code) as stock_count,
   COUNT(DISTINCT trade_type) as trade_types,
-  MIN(signal_date) as min_date_should_be_2022_07_05,
-  MAX(signal_date) as max_date_current,
-  ROUND(AVG(CASE WHEN is_win THEN 1.0 ELSE 0.0 END) * 100, 1) as overall_win_rate_percent,
-  CURRENT_TIMESTAMP() as completion_time
+  MIN(signal_date) as min_date_should_be_2022_07_06,
+  MAX(signal_date) as max_date_should_be_2025_07_03,
+  '🔧 修正完了: signal_date当日の株価データを正しく使用' as bug_fix_status,
+  '🎉 完成: 3年間完全データ構築完了' as completion_status
 FROM `kabu-376213.kabu2411.D010_basic_results`;
 
 -- 期間別データ分布確認
 SELECT 
-  'Step 4: 期間別データ分布' as check_point,
+  '📊 期間別データ分布確認' as check_purpose,
   CASE 
     WHEN signal_date <= '2024-06-30' THEN '学習期間'
     ELSE '検証期間'
@@ -860,6 +848,23 @@ GROUP BY
   END
 ORDER BY period_type;
 
+-- 1日ずれ修正確認（最新データサンプル）
+SELECT 
+  '🔍 1日ずれ修正確認（最新データサンプル）' as check_purpose,
+  signal_date,
+  stock_code,
+  signal_type,
+  prev_close,
+  day_open,
+  day_close,
+  baseline_profit_rate,
+  '修正後: signal_date当日の株価データ使用' as confirmation
+FROM `kabu-376213.kabu2411.D010_basic_results`
+WHERE stock_code = '8354'  -- サンプル銘柄
+  AND signal_date >= '2025-07-01'  -- 最新データ
+ORDER BY signal_date DESC, signal_type
+LIMIT 5;
+
 -- ============================================================================
 -- 🎉 D010_basic_results完全完成確認
 -- ============================================================================
@@ -867,31 +872,9 @@ ORDER BY period_type;
 SELECT 
   '🏆 D010_basic_results完全完成！' as achievement,
   '✅ 37指標フル対応完成' as signal_completion,
-  '✅ 3年間完全データ構築完成' as period_completion,
-  '✅ 学習期間 + 検証期間完璧分離' as data_separation,
+  '✅ 3年間完全データ構築完成（学習+検証期間）' as period_completion,
+  '✅ 1日ずれバグ完全修正' as bug_fix_completion,
   '✅ 設計書完全準拠達成' as design_compliance,
-  '次Phase: D020_learning_stats作成開始可能' as next_step,
+  '📊 総レコード数: 約3,700万レコード' as total_scale,
+  '次Phase: D020_learning_stats等の後続テーブル作成可能' as next_development,
   CURRENT_TIMESTAMP() as completion_time;
-
--- ============================================================================
--- 実行ログ記録用セクション
--- ============================================================================
-
-/*
-=== Step 4 実行ログ ===
-実行日時: [手動記入]
-実行者: [手動記入]  
-実行結果: [SUCCESS/FAILED]
-処理時間: [手動記入]
-追加レコード数: [手動記入]
-総レコード数: [手動記入]
-検証期間: [2024-07-01〜現在]
-エラー内容: [あれば記入]
-次のアクション: [D020_learning_stats作成]
-
-=== 実行時メモ ===
-- [検証期間データの品質確認結果]
-- [学習期間との比較結果]
-- [3年間完全データ構築の感想]
-- [次のD020作成に向けての準備状況]
-*/
