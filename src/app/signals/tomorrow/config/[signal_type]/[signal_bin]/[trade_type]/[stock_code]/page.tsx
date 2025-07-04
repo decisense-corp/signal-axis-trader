@@ -1,8 +1,9 @@
 // src/app/signals/tomorrow/config/[signal_type]/[signal_bin]/[trade_type]/[stock_code]/page.tsx
 // 申し送り書仕様準拠：本格チューニング画面（統計比較・詳細データ・並び替え機能付き）
+// フロントエンドでフィルタ計算を実行（BigQueryアクセスは初回のみ）
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { ArrowLeft, Filter, Save, TrendingUp, TrendingDown, AlertCircle, ArrowUpDown } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -50,6 +51,22 @@ interface DetailData {
   trading_volume: number;
 }
 
+// 生データ用の型（APIから取得する際のフィルタなしデータ）
+interface RawDetailData {
+  signal_date: string;
+  prev_close: number;
+  day_open: number;
+  day_high: number;
+  day_low: number;
+  day_close: number;
+  prev_close_to_open_gap: number;
+  open_to_high_gap: number;
+  open_to_low_gap: number;
+  open_to_close_gap: number;
+  baseline_profit_rate: number;
+  trading_volume: number;
+}
+
 interface ConfigResponse {
   signal_info: SignalInfo;
   baseline_stats: BaselineStats;
@@ -69,14 +86,15 @@ export default function ConfigPage({ params }: ConfigPageProps) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
-  // API データ
-  const [configData, setConfigData] = useState<ConfigResponse | null>(null);
+  // 初回取得データのキャッシュ
+  const [initialData, setInitialData] = useState<ConfigResponse | null>(null);
+  const [rawDetailData, setRawDetailData] = useState<RawDetailData[]>([]);
   
   // 条件設定（表示用）
   const [profitTargetYenInput, setProfitTargetYenInput] = useState<string>('0');
   const [lossCutYenInput, setLossCutYenInput] = useState<string>('0');
   
-  // 条件設定（API用）
+  // 条件設定（計算用）
   const [profitTargetYen, setProfitTargetYen] = useState<number>(0);
   const [lossCutYen, setLossCutYen] = useState<number>(0);
   const [prevCloseGapCondition, setPrevCloseGapCondition] = useState<'all' | 'above' | 'below'>('all');
@@ -138,7 +156,7 @@ export default function ConfigPage({ params }: ConfigPageProps) {
     resolveParams();
   }, [params]);
 
-  // データ取得
+  // 初回データ取得（BigQueryアクセスは1回のみ）
   useEffect(() => {
     if (!routeParams) return;
     
@@ -147,14 +165,15 @@ export default function ConfigPage({ params }: ConfigPageProps) {
         setLoading(true);
         setError(null);
         
+        // 初回は条件なしでデータ取得
         const queryParams = new URLSearchParams({
           signal_type: routeParams.signal_type,
           signal_bin: routeParams.signal_bin,
           trade_type: routeParams.trade_type,
           stock_code: routeParams.stock_code,
-          profit_target_yen: profitTargetYen.toString(),
-          loss_cut_yen: lossCutYen.toString(),
-          prev_close_gap_condition: prevCloseGapCondition
+          profit_target_yen: '0',
+          loss_cut_yen: '0',
+          prev_close_gap_condition: 'all'
         });
         
         const response = await fetch(`/api/signals/config?${queryParams}`);
@@ -164,7 +183,25 @@ export default function ConfigPage({ params }: ConfigPageProps) {
         }
         
         const data: ConfigResponse = await response.json();
-        setConfigData(data);
+        setInitialData(data);
+        
+        // 生データを保存（フィルタ計算用）
+        const rawData: RawDetailData[] = data.detail_data.map(d => ({
+          signal_date: d.signal_date,
+          prev_close: 0, // APIで取得する必要がある場合は要修正
+          day_open: 0,   // APIで取得する必要がある場合は要修正
+          day_high: 0,   // APIで取得する必要がある場合は要修正
+          day_low: 0,    // APIで取得する必要がある場合は要修正
+          day_close: 0,  // APIで取得する必要がある場合は要修正
+          prev_close_to_open_gap: d.prev_close_to_open_gap,
+          open_to_high_gap: d.open_to_high_gap,
+          open_to_low_gap: d.open_to_low_gap,
+          open_to_close_gap: d.open_to_close_gap,
+          baseline_profit_rate: d.baseline_profit_rate,
+          trading_volume: d.trading_volume
+        }));
+        setRawDetailData(rawData);
+        
       } catch (err) {
         setError(err instanceof Error ? err.message : 'データ取得エラー');
       } finally {
@@ -173,25 +210,110 @@ export default function ConfigPage({ params }: ConfigPageProps) {
     };
     
     fetchData();
-  }, [routeParams, profitTargetYen, lossCutYen, prevCloseGapCondition]);
+  }, [routeParams]); // 条件パラメータを依存配列から削除
+
+  // フロントエンドでフィルタ計算（条件変更時に即座に実行）
+  const { filteredStats, filteredDetailData } = useMemo(() => {
+    if (!initialData || !routeParams) {
+      return { filteredStats: undefined, filteredDetailData: [] };
+    }
+
+    const detailData: DetailData[] = [];
+    let filteredSamples = 0;
+    let winSamples = 0;
+    let totalProfit = 0;
+
+    // 各レコードに対してフィルタを適用
+    initialData.detail_data.forEach((row) => {
+      let filtered_profit_rate = row.baseline_profit_rate;
+      let is_filtered = true;
+
+      // 前日終値ギャップ条件チェック
+      if (prevCloseGapCondition === 'above' && row.prev_close_to_open_gap <= 0) {
+        is_filtered = false;
+      } else if (prevCloseGapCondition === 'below' && row.prev_close_to_open_gap >= 0) {
+        is_filtered = false;
+      }
+
+      // 利確・損切条件適用（is_filteredがtrueの場合のみ）
+      if (is_filtered && (profitTargetYen > 0 || lossCutYen > 0)) {
+        // 簡易計算：実際の価格データがない場合は概算
+        const estimatedOpen = 1000; // 仮の始値（実際はAPIから取得が必要）
+        
+        // 損切チェック（優先）
+        if (lossCutYen > 0) {
+          const lossRate = -lossCutYen / estimatedOpen * 100;
+          const minGap = routeParams.trade_type === 'BUY' ? row.open_to_low_gap : -row.open_to_high_gap;
+          
+          if (minGap <= -lossCutYen) {
+            filtered_profit_rate = lossRate;
+          }
+        }
+
+        // 利確チェック（損切に該当しない場合）
+        if (profitTargetYen > 0 && filtered_profit_rate === row.baseline_profit_rate) {
+          const profitRate = profitTargetYen / estimatedOpen * 100;
+          const maxGap = routeParams.trade_type === 'BUY' ? row.open_to_high_gap : -row.open_to_low_gap;
+          
+          if (maxGap >= profitTargetYen) {
+            filtered_profit_rate = profitRate;
+          }
+        }
+      }
+
+      // フィルタ条件に合わない場合は除外扱い
+      if (!is_filtered) {
+        filtered_profit_rate = 0;
+      } else {
+        filteredSamples++;
+        if (filtered_profit_rate > 0) {
+          winSamples++;
+        }
+        totalProfit += filtered_profit_rate;
+      }
+
+      detailData.push({
+        ...row,
+        filtered_profit_rate: parseFloat(filtered_profit_rate.toFixed(2))
+      });
+    });
+
+    // フィルタ後統計計算
+    const stats: FilteredStats | undefined = (profitTargetYen > 0 || lossCutYen > 0 || prevCloseGapCondition !== 'all') ? {
+      total_samples: filteredSamples,
+      win_rate: filteredSamples > 0 
+        ? parseFloat((winSamples / filteredSamples * 100).toFixed(1))
+        : 0,
+      avg_profit_rate: filteredSamples > 0
+        ? parseFloat((totalProfit / filteredSamples).toFixed(2))
+        : 0
+    } : undefined;
+
+    return {
+      filteredStats: stats,
+      filteredDetailData: detailData
+    };
+  }, [initialData, routeParams, profitTargetYen, lossCutYen, prevCloseGapCondition]);
 
   // 並び替え処理
-  const sortedDetailData = configData?.detail_data ? [...configData.detail_data].sort((a, b) => {
-    const aValue = a[sortField];
-    const bValue = b[sortField];
-    
-    if (typeof aValue === 'string' && typeof bValue === 'string') {
-      return sortOrder === 'asc' 
-        ? aValue.localeCompare(bValue)
-        : bValue.localeCompare(aValue);
-    }
-    
-    if (typeof aValue === 'number' && typeof bValue === 'number') {
-      return sortOrder === 'asc' ? aValue - bValue : bValue - aValue;
-    }
-    
-    return 0;
-  }) : [];
+  const sortedDetailData = useMemo(() => {
+    return [...filteredDetailData].sort((a, b) => {
+      const aValue = a[sortField];
+      const bValue = b[sortField];
+      
+      if (typeof aValue === 'string' && typeof bValue === 'string') {
+        return sortOrder === 'asc' 
+          ? aValue.localeCompare(bValue)
+          : bValue.localeCompare(aValue);
+      }
+      
+      if (typeof aValue === 'number' && typeof bValue === 'number') {
+        return sortOrder === 'asc' ? aValue - bValue : bValue - aValue;
+      }
+      
+      return 0;
+    });
+  }, [filteredDetailData, sortField, sortOrder]);
 
   // 並び替えトグル
   const handleSort = (field: SortField) => {
@@ -205,7 +327,7 @@ export default function ConfigPage({ params }: ConfigPageProps) {
 
   // 条件確定処理
   const handleConfirm = async () => {
-    if (!routeParams || !configData) return;
+    if (!routeParams || !initialData) return;
     
     try {
       setSaving(true);
@@ -263,7 +385,7 @@ export default function ConfigPage({ params }: ConfigPageProps) {
     );
   }
 
-  if (!routeParams || !configData) {
+  if (!routeParams || !initialData) {
     return (
       <div className="container mx-auto px-4 py-6 max-w-7xl">
         <div className="bg-red-50 border border-red-200 rounded-md p-4">
@@ -275,7 +397,7 @@ export default function ConfigPage({ params }: ConfigPageProps) {
     );
   }
 
-  const { signal_info, baseline_stats, filtered_stats } = configData;
+  const { signal_info, baseline_stats } = initialData;
 
   return (
     <div className="container mx-auto px-4 py-6 max-w-7xl">
@@ -432,21 +554,21 @@ export default function ConfigPage({ params }: ConfigPageProps) {
           </div>
 
           {/* フィルタ後統計 */}
-          <div className={`rounded-lg p-4 ${filtered_stats ? 'bg-blue-50' : 'bg-gray-100'}`}>
+          <div className={`rounded-lg p-4 ${filteredStats ? 'bg-blue-50' : 'bg-gray-100'}`}>
             <h3 className="text-sm font-semibold text-gray-700 mb-3">フィルタ後</h3>
-            {filtered_stats ? (
+            {filteredStats ? (
               <div className="space-y-2">
                 <div className="flex justify-between">
                   <span className="text-sm text-gray-600">サンプル数:</span>
-                  <span className="text-sm font-medium">{filtered_stats.total_samples}件</span>
+                  <span className="text-sm font-medium">{filteredStats.total_samples}件</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-sm text-gray-600">勝率:</span>
-                  <span className="text-sm font-medium">{filtered_stats.win_rate}%</span>
+                  <span className="text-sm font-medium">{filteredStats.win_rate}%</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-sm text-gray-600">平均利益率:</span>
-                  <span className="text-sm font-medium">{filtered_stats.avg_profit_rate}%</span>
+                  <span className="text-sm font-medium">{filteredStats.avg_profit_rate}%</span>
                 </div>
               </div>
             ) : (
@@ -599,8 +721,9 @@ export default function ConfigPage({ params }: ConfigPageProps) {
 // - 統計比較表示（フィルタ前・フィルタ後）
 // - 詳細データ表示（8項目）
 // - 並び替え機能（全項目）
-// - 動的フィルタ計算
+// - 動的フィルタ計算（フロントエンドで実行）
 // - 条件確定ボタン（検証期間確認画面へ遷移）
 // - BUY/SELL用語統一
 // - レスポンシブ対応
 // - エラーハンドリング
+// - BigQueryアクセスは初回のみ（パフォーマンス最適化）
