@@ -2,6 +2,7 @@
 // 申し送り書仕様準拠：チューニング画面用API（D020統計 + D010動的計算）
 import { NextRequest, NextResponse } from 'next/server';
 import { BigQueryClient } from '@/lib/bigquery';
+import { calculateFilteredProfitRate, calculateStats } from '@/lib/filterLogic';
 
 const bigquery = new BigQueryClient();
 
@@ -35,6 +36,12 @@ interface DetailData {
   baseline_profit_rate: number;
   filtered_profit_rate: number;
   trading_volume: number;
+  // 価格データを追加（フロントエンドでの再計算用）
+  prev_close: number;
+  day_open: number;
+  day_high: number;
+  day_low: number;
+  day_close: number;
 }
 
 interface ConfigResponse {
@@ -150,96 +157,63 @@ export async function GET(request: NextRequest) {
     console.log('📈 D010詳細データ取得中...');
     const detailDataResult = await bigquery.query(detailDataQuery);
 
-    // 3. フィルタ適用と統計計算
-    let filtered_stats: FilteredStats | undefined;
+    // 3. フィルタ適用と統計計算（共通ロジック使用）
     const detail_data: DetailData[] = [];
-
+    
+    // 各行に対してフィルタ適用
     detailDataResult.forEach((row: any) => {
-      const prev_close_to_open_gap = row.prev_close_to_open_gap;
-      const open_to_high_gap = row.open_to_high_gap;
-      const open_to_low_gap = row.open_to_low_gap;
-      const open_to_close_gap = row.open_to_close_gap;
-      const baseline_profit_rate = parseFloat(row.baseline_profit_rate.toFixed(2));
-      
-      // フィルタ適用ロジック
-      let filtered_profit_rate = baseline_profit_rate;
-      let is_filtered = true;
-
-      // 前日終値ギャップ条件チェック
-      if (prev_close_gap_condition === 'above' && prev_close_to_open_gap <= 0) {
-        is_filtered = false;
-      } else if (prev_close_gap_condition === 'below' && prev_close_to_open_gap >= 0) {
-        is_filtered = false;
-      }
-
-      // 利確・損切条件適用（is_filteredがtrueの場合のみ）
-      if (is_filtered && (profit_target_yen > 0 || loss_cut_yen > 0)) {
-        const day_open = row.day_open;
-        const day_high = row.day_high;
-        const day_low = row.day_low;
-        const day_close = row.day_close;
-
-        // 損切チェック（優先）
-        if (loss_cut_yen > 0) {
-          const loss_cut_price = trade_type === 'BUY' 
-            ? day_open - loss_cut_yen 
-            : day_open + loss_cut_yen;
-          
-          if (trade_type === 'BUY' && day_low <= loss_cut_price) {
-            filtered_profit_rate = -loss_cut_yen / day_open * 100;
-          } else if (trade_type === 'SELL' && day_high >= loss_cut_price) {
-            filtered_profit_rate = -loss_cut_yen / day_open * 100;
-          }
+      // 共通ロジックを使用してfiltered_profit_rateを計算
+      const filtered_profit_rate = calculateFilteredProfitRate(
+        {
+          day_open: row.day_open,
+          day_high: row.day_high,
+          day_low: row.day_low,
+          day_close: row.day_close,
+          prev_close_to_open_gap: row.prev_close_to_open_gap,
+          baseline_profit_rate: row.baseline_profit_rate
+        },
+        {
+          trade_type: trade_type as 'BUY' | 'SELL',
+          profit_target_yen: profit_target_yen,
+          loss_cut_yen: loss_cut_yen,
+          prev_close_gap_condition: prev_close_gap_condition as 'all' | 'above' | 'below'
         }
+      );
 
-        // 利確チェック（損切に該当しない場合）
-        if (profit_target_yen > 0 && filtered_profit_rate === baseline_profit_rate) {
-          const profit_target_price = trade_type === 'BUY'
-            ? day_open + profit_target_yen
-            : day_open - profit_target_yen;
-          
-          if (trade_type === 'BUY' && day_high >= profit_target_price) {
-            filtered_profit_rate = profit_target_yen / day_open * 100;
-          } else if (trade_type === 'SELL' && day_low <= profit_target_price) {
-            filtered_profit_rate = profit_target_yen / day_open * 100;
-          }
-        }
-      }
-
-      // フィルタ条件に合わない場合は除外扱い
-      if (!is_filtered) {
-        filtered_profit_rate = 0;
-      }
-
+      // 詳細データに追加
       detail_data.push({
         signal_date: row.signal_date.value,
-        prev_close_to_open_gap,
-        open_to_high_gap,
-        open_to_low_gap,
-        open_to_close_gap,
-        baseline_profit_rate,
-        filtered_profit_rate: parseFloat(filtered_profit_rate.toFixed(2)),
-        trading_volume: row.trading_volume
+        prev_close_to_open_gap: parseFloat(row.prev_close_to_open_gap.toFixed(2)),
+        open_to_high_gap: parseFloat(row.open_to_high_gap.toFixed(2)),
+        open_to_low_gap: parseFloat(row.open_to_low_gap.toFixed(2)),
+        open_to_close_gap: parseFloat(row.open_to_close_gap.toFixed(2)),
+        baseline_profit_rate: parseFloat(row.baseline_profit_rate.toFixed(2)),
+        filtered_profit_rate: filtered_profit_rate,
+        trading_volume: row.trading_volume,
+        // 価格データを追加
+        prev_close: row.prev_close,
+        day_open: row.day_open,
+        day_high: row.day_high,
+        day_low: row.day_low,
+        day_close: row.day_close
       });
     });
 
     // フィルタ後統計計算
+    let filtered_stats: FilteredStats | undefined = undefined;
+    
     if (profit_target_yen > 0 || loss_cut_yen > 0 || prev_close_gap_condition !== 'all') {
-      const filtered_samples = detail_data.filter(d => d.filtered_profit_rate !== 0);
-      const win_samples = filtered_samples.filter(d => d.filtered_profit_rate > 0);
-      const total_profit = filtered_samples.reduce((sum, d) => sum + d.filtered_profit_rate, 0);
-
+      // 共通ロジックを使用して統計計算
+      const stats = calculateStats(detail_data, true); // true = 0を除外
+      
       filtered_stats = {
-        total_samples: filtered_samples.length,
-        win_rate: filtered_samples.length > 0 
-          ? parseFloat((win_samples.length / filtered_samples.length * 100).toFixed(1))
-          : 0,
-        avg_profit_rate: filtered_samples.length > 0
-          ? parseFloat((total_profit / filtered_samples.length).toFixed(2))
-          : 0
+        total_samples: stats.total_samples,
+        win_rate: stats.win_rate,
+        avg_profit_rate: stats.avg_profit_rate
       };
     }
 
+    // レスポンス構築
     const response: ConfigResponse = {
       signal_info,
       baseline_stats,
@@ -267,3 +241,4 @@ export async function GET(request: NextRequest) {
 // - BUY/SELL用語統一 ✅
 // - URLデコード対応 ✅
 // - パフォーマンス目標：3秒以内 ✅
+// - 共通ロジック使用（filterLogic.ts） ✅

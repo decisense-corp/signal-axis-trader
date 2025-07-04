@@ -7,6 +7,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { ArrowLeft, Filter, Save, TrendingUp, TrendingDown, AlertCircle, ArrowUpDown } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { calculateFilteredProfitRate, calculateStats } from '@/lib/filterLogic';
 
 // TypeScript型定義
 interface RouteParams {
@@ -49,22 +50,12 @@ interface DetailData {
   baseline_profit_rate: number;
   filtered_profit_rate: number;
   trading_volume: number;
-}
-
-// 生データ用の型（APIから取得する際のフィルタなしデータ）
-interface RawDetailData {
-  signal_date: string;
+  // 価格データ（フロントエンドでの再計算用）
   prev_close: number;
   day_open: number;
   day_high: number;
   day_low: number;
   day_close: number;
-  prev_close_to_open_gap: number;
-  open_to_high_gap: number;
-  open_to_low_gap: number;
-  open_to_close_gap: number;
-  baseline_profit_rate: number;
-  trading_volume: number;
 }
 
 interface ConfigResponse {
@@ -88,7 +79,6 @@ export default function ConfigPage({ params }: ConfigPageProps) {
   
   // 初回取得データのキャッシュ
   const [initialData, setInitialData] = useState<ConfigResponse | null>(null);
-  const [rawDetailData, setRawDetailData] = useState<RawDetailData[]>([]);
   
   // 条件設定（表示用）
   const [profitTargetYenInput, setProfitTargetYenInput] = useState<string>('0');
@@ -185,23 +175,6 @@ export default function ConfigPage({ params }: ConfigPageProps) {
         const data: ConfigResponse = await response.json();
         setInitialData(data);
         
-        // 生データを保存（フィルタ計算用）
-        const rawData: RawDetailData[] = data.detail_data.map(d => ({
-          signal_date: d.signal_date,
-          prev_close: 0, // APIで取得する必要がある場合は要修正
-          day_open: 0,   // APIで取得する必要がある場合は要修正
-          day_high: 0,   // APIで取得する必要がある場合は要修正
-          day_low: 0,    // APIで取得する必要がある場合は要修正
-          day_close: 0,  // APIで取得する必要がある場合は要修正
-          prev_close_to_open_gap: d.prev_close_to_open_gap,
-          open_to_high_gap: d.open_to_high_gap,
-          open_to_low_gap: d.open_to_low_gap,
-          open_to_close_gap: d.open_to_close_gap,
-          baseline_profit_rate: d.baseline_profit_rate,
-          trading_volume: d.trading_volume
-        }));
-        setRawDetailData(rawData);
-        
       } catch (err) {
         setError(err instanceof Error ? err.message : 'データ取得エラー');
       } finally {
@@ -219,75 +192,46 @@ export default function ConfigPage({ params }: ConfigPageProps) {
     }
 
     const detailData: DetailData[] = [];
-    let filteredSamples = 0;
-    let winSamples = 0;
-    let totalProfit = 0;
 
-    // 各レコードに対してフィルタを適用
+    // 各レコードに対して共通ロジックを使用してフィルタを適用
     initialData.detail_data.forEach((row) => {
-      let filtered_profit_rate = row.baseline_profit_rate;
-      let is_filtered = true;
-
-      // 前日終値ギャップ条件チェック
-      if (prevCloseGapCondition === 'above' && row.prev_close_to_open_gap <= 0) {
-        is_filtered = false;
-      } else if (prevCloseGapCondition === 'below' && row.prev_close_to_open_gap >= 0) {
-        is_filtered = false;
-      }
-
-      // 利確・損切条件適用（is_filteredがtrueの場合のみ）
-      if (is_filtered && (profitTargetYen > 0 || lossCutYen > 0)) {
-        // 簡易計算：実際の価格データがない場合は概算
-        const estimatedOpen = 1000; // 仮の始値（実際はAPIから取得が必要）
-        
-        // 損切チェック（優先）
-        if (lossCutYen > 0) {
-          const lossRate = -lossCutYen / estimatedOpen * 100;
-          const minGap = routeParams.trade_type === 'BUY' ? row.open_to_low_gap : -row.open_to_high_gap;
-          
-          if (minGap <= -lossCutYen) {
-            filtered_profit_rate = lossRate;
-          }
+      // 共通ロジックを使用
+      const filtered_profit_rate = calculateFilteredProfitRate(
+        {
+          day_open: row.day_open,
+          day_high: row.day_high,
+          day_low: row.day_low,
+          day_close: row.day_close,
+          prev_close_to_open_gap: row.prev_close_to_open_gap,
+          baseline_profit_rate: row.baseline_profit_rate
+        },
+        {
+          trade_type: routeParams.trade_type as 'BUY' | 'SELL',
+          profit_target_yen: profitTargetYen,
+          loss_cut_yen: lossCutYen,
+          prev_close_gap_condition: prevCloseGapCondition
         }
-
-        // 利確チェック（損切に該当しない場合）
-        if (profitTargetYen > 0 && filtered_profit_rate === row.baseline_profit_rate) {
-          const profitRate = profitTargetYen / estimatedOpen * 100;
-          const maxGap = routeParams.trade_type === 'BUY' ? row.open_to_high_gap : -row.open_to_low_gap;
-          
-          if (maxGap >= profitTargetYen) {
-            filtered_profit_rate = profitRate;
-          }
-        }
-      }
-
-      // フィルタ条件に合わない場合は除外扱い
-      if (!is_filtered) {
-        filtered_profit_rate = 0;
-      } else {
-        filteredSamples++;
-        if (filtered_profit_rate > 0) {
-          winSamples++;
-        }
-        totalProfit += filtered_profit_rate;
-      }
+      );
 
       detailData.push({
         ...row,
-        filtered_profit_rate: parseFloat(filtered_profit_rate.toFixed(2))
+        filtered_profit_rate
       });
     });
 
     // フィルタ後統計計算
-    const stats: FilteredStats | undefined = (profitTargetYen > 0 || lossCutYen > 0 || prevCloseGapCondition !== 'all') ? {
-      total_samples: filteredSamples,
-      win_rate: filteredSamples > 0 
-        ? parseFloat((winSamples / filteredSamples * 100).toFixed(1))
-        : 0,
-      avg_profit_rate: filteredSamples > 0
-        ? parseFloat((totalProfit / filteredSamples).toFixed(2))
-        : 0
-    } : undefined;
+    let stats: FilteredStats | undefined = undefined;
+    
+    if (profitTargetYen > 0 || lossCutYen > 0 || prevCloseGapCondition !== 'all') {
+      // 共通ロジックを使用して統計計算
+      const calcResult = calculateStats(detailData, true); // true = 0を除外
+      
+      stats = {
+        total_samples: calcResult.total_samples,
+        win_rate: calcResult.win_rate,
+        avg_profit_rate: calcResult.avg_profit_rate
+      };
+    }
 
     return {
       filteredStats: stats,
@@ -718,12 +662,13 @@ export default function ConfigPage({ params }: ConfigPageProps) {
 }
 
 // 申し送り書チェックリスト確認
-// - 統計比較表示（フィルタ前・フィルタ後）
-// - 詳細データ表示（8項目）
-// - 並び替え機能（全項目）
-// - 動的フィルタ計算（フロントエンドで実行）
-// - 条件確定ボタン（検証期間確認画面へ遷移）
-// - BUY/SELL用語統一
-// - レスポンシブ対応
-// - エラーハンドリング
-// - BigQueryアクセスは初回のみ（パフォーマンス最適化）
+// - 統計比較表示（フィルタ前・フィルタ後）✅
+// - 詳細データ表示（8項目）✅
+// - 並び替え機能（全項目）✅
+// - 動的フィルタ計算（フロントエンドで実行）✅
+// - 条件確定ボタン（検証期間確認画面へ遷移）✅
+// - BUY/SELL用語統一 ✅
+// - レスポンシブ対応 ✅
+// - エラーハンドリング ✅
+// - BigQueryアクセスは初回のみ（パフォーマンス最適化）✅
+// - 共通ロジック使用（filterLogic.ts）✅
