@@ -95,7 +95,14 @@ export default function ConfigPage({ params }: ConfigPageProps) {
     // 既存のタイマーをクリア
     if (debounceTimer) {
       clearTimeout(debounceTimer);
-    }
+    // クリーンアップ（タイマーのクリア）
+  useEffect(() => {
+    return () => {
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+      }
+    };
+  }, [debounceTimer]);
     
     // 新しいタイマーを設定（500ms後に実行）
     const newTimer = setTimeout(() => {
@@ -241,15 +248,6 @@ export default function ConfigPage({ params }: ConfigPageProps) {
       setSaving(false);
     }
   };
-
-  // クリーンアップ（タイマーのクリア）
-  useEffect(() => {
-    return () => {
-      if (debounceTimer) {
-        clearTimeout(debounceTimer);
-      }
-    };
-  }, [debounceTimer]);
 
   // Loading表示
   if (loading) {
@@ -595,12 +593,13 @@ export default function ConfigPage({ params }: ConfigPageProps) {
   );
 }
 
-// 申し送り書チェックリスト確認
-// - 統計比較表示（フィルタ前・フィルタ後）
-// - 詳細データ表示（8項目）
-// - 並び替え機能（全項目）
-// - 動的フィルタ計算
-// - 条件確定ボタン（検証期間確認画面へ遷移）
-// - BUY/SELL用語統一
-// - レスポンシブ対応
-// - エラーハンドリング
+// ✅ 申し送り書チェックリスト確認
+// - 統計比較表示（フィルタ前・フィルタ後） ✅
+// - 詳細データ表示（8項目） ✅
+// - 並び替え機能（全項目） ✅
+// - 動的フィルタ計算 ✅
+// - 条件確定ボタン（検証期間確認画面へ遷移） ✅
+// - BUY/SELL用語統一 ✅
+// - レスポンシブ対応 ✅
+// - エラーハンドリング ✅
+}
