@@ -1,10 +1,12 @@
 /*
-ファイル: 05_insert_D030_tomorrow_signals_date_fixed.sql
-説明: D030_tomorrow_signals 日次データ投入（target_date修正版）
+ファイル: 05_insert_D030_tomorrow_signals_corrected.sql
+説明: D030_tomorrow_signals 日次データ投入（修正版・37指標完全対応）
 作成日: 2025年7月4日
-修正内容: target_date計算ロジックの修正
-- quote_dateベースの正しい翌営業日計算
-- 削除処理も同様に修正
+修正内容: 02クエリ準拠の正しい実装
+- 過去35日分データ取得でLAG計算対応
+- 37指標完全実装
+- 営業日カレンダーでtarget_date計算
+- D020統計データとLEFT JOIN + COALESCE
 依存: D020_learning_stats（完成済み）+ daily_quotes + trading_calendar
 目的: 明日発生予定のシグナル計算 + 学習期間統計の統合データ作成
 処理時間: 約3-5分
@@ -19,39 +21,35 @@
 
 -- 処理開始メッセージ
 SELECT 
-  '🚀 D030日次投入開始（target_date修正版）' as message,
-  '修正内容: target_date計算ロジックの修正' as fix_description,
-  '問題: CURRENT_DATE()ベースではなくquote_dateベースで計算' as issue,
-  '解決: 最新quote_dateの翌営業日を正しく計算' as solution,
+  '🚀 D030日次投入開始（修正版・37指標完全対応）' as message,
+  '修正内容: 02クエリ準拠の正しい実装' as fix_description,
+  '1. 過去35日分データ取得でLAG計算対応' as fix_1,
+  '2. 37指標完全実装' as fix_2,
+  '3. 営業日カレンダーでtarget_date計算' as fix_3,
   'データソース: 最新株価データ + D020統計データ' as data_source,
   '予想レコード数: 約5万レコード' as estimated_records,
   CURRENT_TIMESTAMP() as start_time;
 
 -- ============================================================================
--- Step 1: 既存データ削除（修正版）
+-- Step 1: 既存データ削除（明日分のみ）
 -- ============================================================================
 
--- 最新quote_dateの翌営業日分のデータを削除
+-- 明日分のデータを削除（冪等性確保）
 DELETE FROM `kabu-376213.kabu2411.D030_tomorrow_signals` 
 WHERE target_date = (
   SELECT MIN(tc.Date)
   FROM `kabu-376213.kabu2411.trading_calendar` tc
-  WHERE tc.Date > (SELECT MAX(Date) FROM `kabu-376213.kabu2411.daily_quotes`)
+  WHERE tc.Date > CURRENT_DATE() 
     AND tc.HolidayDivision = '1'
 );
 
 SELECT 
-  '✅ Step 1完了: 既存データ削除完了' as status,
+  '✅ Step 1完了: 既存明日データ削除完了' as status,
   (
-    SELECT CONCAT('最新quote_date: ', CAST(MAX(Date) AS STRING))
-    FROM `kabu-376213.kabu2411.daily_quotes`
-  ) as latest_quote_date,
-  (
-    SELECT CONCAT('削除target_date: ', CAST(MIN(tc.Date) AS STRING))
+    SELECT CONCAT('target_date: ', CAST(MIN(tc.Date) AS STRING))
     FROM `kabu-376213.kabu2411.trading_calendar` tc
-    WHERE tc.Date > (SELECT MAX(Date) FROM `kabu-376213.kabu2411.daily_quotes`)
-      AND tc.HolidayDivision = '1'
-  ) as deleted_target_date,
+    WHERE tc.Date > CURRENT_DATE() AND tc.HolidayDivision = '1'
+  ) as deleted_date,
   '次: Step 2（明日シグナル計算）' as next_action;
 
 -- ============================================================================
@@ -86,7 +84,7 @@ stock_quotes AS (
   FROM `kabu-376213.kabu2411.daily_quotes` dq
   WHERE dq.Date >= DATE_SUB(
       (SELECT MAX(Date) FROM `kabu-376213.kabu2411.daily_quotes`), 
-      INTERVAL 50 DAY
+      INTERVAL 35 DAY
     )
     AND dq.Date <= (SELECT MAX(Date) FROM `kabu-376213.kabu2411.daily_quotes`)
     AND dq.Open > 0 AND dq.Close > 0  -- 基本品質チェック
@@ -98,7 +96,7 @@ signal_calculations AS (
     q.stock_code,
     mts.company_name as stock_name,
     q.quote_date,
-    -- target_date計算（営業日カレンダー使用・修正版）
+    -- target_date計算（営業日カレンダー使用）
     (
       SELECT MIN(tc.Date)
       FROM `kabu-376213.kabu2411.trading_calendar` tc
@@ -785,12 +783,12 @@ ORDER BY
   trade_type;
 
 -- ============================================================================
--- Step 3: 投入結果確認（修正版）
+-- Step 3: 投入結果確認
 -- ============================================================================
 
 -- 基本投入確認
 SELECT 
-  '✅ Step 3: 投入結果確認（target_date修正版）' as check_step,
+  '✅ Step 3: 投入結果確認' as check_step,
   COUNT(*) as total_records_inserted,
   COUNT(DISTINCT signal_type) as signal_types_count_should_be_37,
   COUNT(DISTINCT stock_code) as stocks_count,
@@ -798,17 +796,15 @@ SELECT
   SUM(CASE WHEN is_excellent_pattern = true THEN 1 ELSE 0 END) as excellent_patterns,
   AVG(CASE WHEN total_samples > 0 THEN win_rate ELSE NULL END) as avg_win_rate,
   (
-    SELECT CONCAT('target_date: ', CAST(MIN(tc.Date) AS STRING))
+    SELECT MIN(tc.Date)
     FROM `kabu-376213.kabu2411.trading_calendar` tc
-    WHERE tc.Date > (SELECT MAX(Date) FROM `kabu-376213.kabu2411.daily_quotes`)
-      AND tc.HolidayDivision = '1'
+    WHERE tc.Date > CURRENT_DATE() AND tc.HolidayDivision = '1'
   ) as target_date_confirmed
 FROM `kabu-376213.kabu2411.D030_tomorrow_signals`
 WHERE target_date = (
   SELECT MIN(tc.Date)
   FROM `kabu-376213.kabu2411.trading_calendar` tc
-  WHERE tc.Date > (SELECT MAX(Date) FROM `kabu-376213.kabu2411.daily_quotes`)
-    AND tc.HolidayDivision = '1'
+  WHERE tc.Date > CURRENT_DATE() AND tc.HolidayDivision = '1'
 );
 
 -- パターンカテゴリ分布確認
@@ -823,8 +819,7 @@ FROM `kabu-376213.kabu2411.D030_tomorrow_signals`
 WHERE target_date = (
   SELECT MIN(tc.Date)
   FROM `kabu-376213.kabu2411.trading_calendar` tc
-  WHERE tc.Date > (SELECT MAX(Date) FROM `kabu-376213.kabu2411.daily_quotes`)
-    AND tc.HolidayDivision = '1'
+  WHERE tc.Date > CURRENT_DATE() AND tc.HolidayDivision = '1'
 )
 GROUP BY pattern_category
 ORDER BY 
@@ -847,8 +842,7 @@ FROM `kabu-376213.kabu2411.D030_tomorrow_signals`
 WHERE target_date = (
   SELECT MIN(tc.Date)
   FROM `kabu-376213.kabu2411.trading_calendar` tc
-  WHERE tc.Date > (SELECT MAX(Date) FROM `kabu-376213.kabu2411.daily_quotes`)
-    AND tc.HolidayDivision = '1'
+  WHERE tc.Date > CURRENT_DATE() AND tc.HolidayDivision = '1'
 )
 GROUP BY signal_type
 ORDER BY signal_type;
@@ -870,34 +864,27 @@ FROM `kabu-376213.kabu2411.D030_tomorrow_signals`
 WHERE target_date = (
   SELECT MIN(tc.Date)
   FROM `kabu-376213.kabu2411.trading_calendar` tc
-  WHERE tc.Date > (SELECT MAX(Date) FROM `kabu-376213.kabu2411.daily_quotes`)
-    AND tc.HolidayDivision = '1'
+  WHERE tc.Date > CURRENT_DATE() AND tc.HolidayDivision = '1'
 )
   AND is_excellent_pattern = true
 ORDER BY priority_score DESC
 LIMIT 10;
 
 -- ============================================================================
--- 🎉 D030日次投入完成確認（target_date修正版）
+-- 🎉 D030日次投入完成確認
 -- ============================================================================
 
 SELECT 
-  '🏆 D030日次投入完了！（target_date修正版）' as achievement,
-  '✅ target_date計算ロジック修正完了' as date_fix,
+  '🏆 D030日次投入完了！（修正版）' as achievement,
   '✅ 37指標完全実装' as signal_completion,
   '✅ 営業日カレンダー対応' as calendar_integration,
   '✅ D020統計データ統合（LEFT JOIN + COALESCE）' as statistics_integration,
   '✅ 4軸一覧画面データ準備完成' as ui_data_ready,
   '✅ JOIN完全不要データ作成完成' as join_free_data,
   (
-    SELECT CONCAT('最新quote_date: ', CAST(MAX(Date) AS STRING))
-    FROM `kabu-376213.kabu2411.daily_quotes`
-  ) as latest_quote_date,
-  (
     SELECT CONCAT('target_date: ', CAST(MIN(tc.Date) AS STRING))
     FROM `kabu-376213.kabu2411.trading_calendar` tc
-    WHERE tc.Date > (SELECT MAX(Date) FROM `kabu-376213.kabu2411.daily_quotes`)
-      AND tc.HolidayDivision = '1'
+    WHERE tc.Date > CURRENT_DATE() AND tc.HolidayDivision = '1'
   ) as tomorrow_trading_date,
   COUNT(*) as total_tomorrow_signals,
   '次Phase: 4軸一覧画面API実装可能' as next_development,
@@ -906,8 +893,7 @@ FROM `kabu-376213.kabu2411.D030_tomorrow_signals`
 WHERE target_date = (
   SELECT MIN(tc.Date)
   FROM `kabu-376213.kabu2411.trading_calendar` tc
-  WHERE tc.Date > (SELECT MAX(Date) FROM `kabu-376213.kabu2411.daily_quotes`)
-    AND tc.HolidayDivision = '1'
+  WHERE tc.Date > CURRENT_DATE() AND tc.HolidayDivision = '1'
 );
 
 -- ============================================================================
@@ -915,8 +901,7 @@ WHERE target_date = (
 -- ============================================================================
 
 SELECT 
-  'D030日次投入が完了しました（target_date修正版）' as message,
-  '✅ target_date計算ロジック修正：quote_dateベース' as key_fix,
+  'D030日次投入が完了しました（修正版）' as message,
   '✅ 37指標シグナル値計算完成' as signal_calculation,
   '✅ 営業日ベースの正確なtarget_date設定' as accurate_date,
   '✅ D020統計データ完全統合' as statistics_complete,
