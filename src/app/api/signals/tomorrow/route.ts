@@ -40,6 +40,7 @@ export async function GET(request: NextRequest) {
     const decision_filter = searchParams.get('decision_filter') || 'pending_only';
     const min_win_rate = searchParams.get('min_win_rate');
     const min_avg_profit = searchParams.get('min_avg_profit');
+    const stock_code = searchParams.get('stock_code'); // 🆕 銘柄コードパラメータ追加
 
     // ページネーション計算
     const offset = (page - 1) * per_page;
@@ -65,6 +66,13 @@ export async function GET(request: NextRequest) {
     }
     if (min_avg_profit) {
       whereConditions.push(`avg_profit_rate >= ${parseFloat(min_avg_profit)}`);
+    }
+    
+    // 🆕 銘柄コードフィルタ
+    if (stock_code) {
+      // SQLインジェクション対策：エスケープ処理
+      const escapedStockCode = stock_code.replace(/'/g, "''");
+      whereConditions.push(`stock_code = '${escapedStockCode}'`);
     }
 
     const whereClause = whereConditions.join(' AND ');
@@ -158,4 +166,5 @@ export async function GET(request: NextRequest) {
 // - 期待値順ソート ✅
 // - ページネーション対応 ✅
 // - フィルタ機能対応 ✅
+// - 🆕 銘柄コードフィルタ追加 ✅
 // - パフォーマンス目標：1秒以内 ✅

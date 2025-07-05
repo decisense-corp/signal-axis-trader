@@ -12,6 +12,7 @@ interface DecisionRequest {
   signal_bin: number;
   trade_type: 'BUY' | 'SELL';  // ✅ 申し送り書仕様：BUY/SELL
   stock_code: string;
+  decision_status?: 'configured' | 'rejected' | 'pending';  // オプショナルに変更
   profit_target_yen?: number;    // 利確目標（円）
   loss_cut_yen?: number;         // 損切設定（円）
   prev_close_gap_condition?: 'all' | 'above' | 'below';  // 前日終値ギャップ条件
@@ -82,8 +83,8 @@ export async function POST(request: NextRequest) {
     if (existingData.length > 0) {
       const existing = existingData[0];
       
-      // 既に確定済みの場合はエラー
-      if (existing.decision_status === 'configured') {
+      // 既に確定済みで、さらに確定しようとしている場合はエラー
+      if (existing.decision_status === 'configured' && body.decision_status === 'configured') {
         return NextResponse.json({
           success: false,
           error: 'この4軸の条件は既に確定済みです。変更するにはリセットが必要です。',
@@ -101,11 +102,16 @@ export async function POST(request: NextRequest) {
       
       operation = 'UPDATE';
       
+      // decision_statusの扱い：
+      // - 明示的に指定されている場合：その値を使用
+      // - 指定されていない場合：既存の値を維持
+      const newDecisionStatus = body.decision_status || existing.decision_status;
+      
       // 申し送り書仕様：D020更新クエリ
       queryText = `
         UPDATE \`kabu-376213.kabu2411.D020_learning_stats\`
         SET 
-          decision_status = 'configured',
+          decision_status = '${newDecisionStatus}',
           profit_target_yen = ${body.profit_target_yen || 0},
           loss_cut_yen = ${body.loss_cut_yen || 0},
           prev_close_gap_condition = '${body.prev_close_gap_condition || 'all'}',
@@ -137,21 +143,23 @@ export async function POST(request: NextRequest) {
 
     // 🔧 追加：D030_tomorrow_signals も同時更新（リアルタイム反映用）
     // 注意：D030にレコードがない場合は何もしない（サイレント処理）
-    const d030UpdateQuery = `
-      UPDATE \`kabu-376213.kabu2411.D030_tomorrow_signals\`
-      SET 
-        decision_status = 'configured'
-      WHERE signal_type = '${signal_type}'
-        AND signal_bin = ${signal_bin}
-        AND trade_type = '${trade_type}'
-        AND stock_code = '${stock_code}'
-    `;
+    if (body.decision_status) {
+      const d030UpdateQuery = `
+        UPDATE \`kabu-376213.kabu2411.D030_tomorrow_signals\`
+        SET 
+          decision_status = '${body.decision_status}'
+        WHERE signal_type = '${signal_type}'
+          AND signal_bin = ${signal_bin}
+          AND trade_type = '${trade_type}'
+          AND stock_code = '${stock_code}'
+      `;
 
-    try {
-      await bigquery.query(d030UpdateQuery);
-      // サイレント処理：結果に関わらず成功扱い
-    } catch (d030Error) {
-      // D030エラーも無視（サイレント処理）
+      try {
+        await bigquery.query(d030UpdateQuery);
+        // サイレント処理：結果に関わらず成功扱い
+      } catch (d030Error) {
+        // D030エラーも無視（サイレント処理）
+      }
     }
 
     const response: DecisionResponse = {
@@ -227,3 +235,4 @@ export async function GET(request: NextRequest) {
 // - 既存設定の重複チェック ✅
 // - パフォーマンス目標：0.5秒以内 ✅
 // - エラーハンドリング完備 ✅
+// - decision_statusの柔軟な更新 ✅

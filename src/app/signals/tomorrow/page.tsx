@@ -63,6 +63,7 @@ export default function TomorrowSignalsPage() {
   const [decisionFilter, setDecisionFilter] = useState('pending_only'); // 申し送り書仕様：デフォルト未設定のみ
   const [minWinRate, setMinWinRate] = useState('');
   const [minAvgProfit, setMinAvgProfit] = useState('');
+  const [stockCode, setStockCode] = useState(''); // 🆕 銘柄コードフィルタ追加
 
   // データ取得
   const fetchSignals = async () => {
@@ -78,6 +79,7 @@ export default function TomorrowSignalsPage() {
       
       if (minWinRate) params.set('min_win_rate', minWinRate);
       if (minAvgProfit) params.set('min_avg_profit', minAvgProfit);
+      if (stockCode) params.set('stock_code', stockCode); // 🆕 銘柄コードパラメータ追加
       
       const response = await fetch(`/api/signals/tomorrow?${params}`);
       const data: ApiResponse = await response.json();
@@ -99,7 +101,7 @@ export default function TomorrowSignalsPage() {
   // 初期読み込み・フィルタ変更時
   useEffect(() => {
     fetchSignals();
-  }, [page, perPage, decisionFilter, minWinRate, minAvgProfit]);
+  }, [page, perPage, decisionFilter, minWinRate, minAvgProfit, stockCode]); // 🆕 stockCode追加
 
   // 設定ボタンクリック（申し送り書仕様の画面遷移）
   const handleConfigClick = (signal: TomorrowSignal) => {
@@ -124,7 +126,24 @@ export default function TomorrowSignalsPage() {
 
       {/* 申し送り書仕様：フィルタエリア */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
+          {/* 🆕 銘柄コード */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              銘柄コード
+            </label>
+            <input
+              type="text"
+              value={stockCode}
+              onChange={(e) => {
+                setStockCode(e.target.value.toUpperCase()); // 大文字に変換
+                setPage(1);
+              }}
+              placeholder="例: 7203"
+              className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+            />
+          </div>
+
           {/* 設定状況フィルタ */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -442,6 +461,7 @@ export default function TomorrowSignalsPage() {
 // ✅ 申し送り書チェックリスト確認
 // - 10項目表示テーブル ✅
 // - フィルタ機能（設定状況・勝率・期待値） ✅
+// - 🆕 銘柄コードフィルタ追加 ✅
 // - ページネーション（15件/30件/50件） ✅
 // - BUY/SELL用語統一 ✅
 // - パターンカテゴリ色分け ✅
