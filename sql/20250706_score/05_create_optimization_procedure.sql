@@ -19,6 +19,8 @@ BEGIN
   DECLARE best_cv FLOAT64;
   DECLARE start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP();
   DECLARE round_start_time TIMESTAMP;
+  DECLARE input_metric STRING DEFAULT target_metric;  -- 変数のコピーを作成
+  DECLARE input_trade_type STRING DEFAULT target_trade_type;  -- 変数のコピーを作成
   
   -- 開始メッセージ
   SELECT 
@@ -104,12 +106,13 @@ BEGIN
       COUNT(DISTINCT signal_bin) as bins_with_data
     FROM corrected_touch_rates ctr
     WHERE NOT EXISTS (
-      -- 処理済み指標を除外
+      -- 処理済み指標を除外（同じ指標・同じ売買種別内でのみチェック）
       SELECT 1 
       FROM `kabu-376213.kabu2411.optimization_history` oh
       WHERE oh.optimized_signal_type = ctr.signal_type
-        AND oh.target_metric = target_metric
-        AND oh.trade_type = target_trade_type
+        AND oh.target_metric = input_metric  -- input_metricを使用
+        AND oh.trade_type = input_trade_type  -- input_trade_typeを使用
+        AND oh.optimization_round < optimization_round  -- 現在のラウンドより前のみ
     )
     GROUP BY signal_type
     HAVING COUNT(DISTINCT signal_bin) >= 15  -- 最低15bin以上のデータ
@@ -257,15 +260,22 @@ BEGIN
     SET optimization_round = optimization_round + 1;
   END WHILE;
   
-  -- 最終結果サマリー
+  -- 最終結果サマリー（修正版）
+  WITH final_summary AS (
+    SELECT 
+      COUNT(*) as total_optimized_indicators,
+      ROUND(AVG(coefficient_of_variation), 4) as avg_cv_score,
+      ROUND(SUM(processing_time_seconds), 1) as total_processing_seconds
+    FROM `kabu-376213.kabu2411.optimization_history` oh
+    WHERE oh.target_metric = input_metric  -- コピーした変数を使用
+      AND oh.trade_type = input_trade_type  -- コピーした変数を使用
+  )
   SELECT 
-    CONCAT('🎉 ', target_metric, ' (', target_trade_type, ') 最適化完了') as status,
-    COUNT(*) as total_optimized_indicators,
-    ROUND(AVG(coefficient_of_variation), 4) as avg_cv_score,
-    ROUND(SUM(processing_time_seconds), 1) as total_processing_seconds,
-    CONCAT(ROUND(SUM(processing_time_seconds) / 60, 1), ' 分') as total_processing_time
-  FROM `kabu-376213.kabu2411.optimization_history`
-  WHERE target_metric = target_metric
-    AND trade_type = target_trade_type;
+    CONCAT('🎉 ', input_metric, ' (', input_trade_type, ') 最適化完了') as status,
+    total_optimized_indicators,
+    avg_cv_score,
+    total_processing_seconds,
+    CONCAT(ROUND(total_processing_seconds / 60, 1), ' 分') as total_processing_time
+  FROM final_summary;
   
 END;
