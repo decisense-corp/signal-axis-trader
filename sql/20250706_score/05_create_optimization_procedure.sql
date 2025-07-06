@@ -117,7 +117,7 @@ BEGIN
       WHERE oh.optimized_signal_type = ctr.signal_type
         AND oh.target_metric = input_metric  -- input_metricを使用
         AND oh.trade_type = input_trade_type  -- input_trade_typeを使用
-        AND oh.optimization_round < optimization_round  -- 現在のラウンドより前のみ
+        -- optimization_round条件を削除（同じ指標が複数回選ばれるのを防ぐ）
     )
     GROUP BY signal_type
     HAVING COUNT(DISTINCT signal_bin) >= 15  -- 最低15bin以上のデータ
