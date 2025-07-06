@@ -1,8 +1,11 @@
 -- ============================================================================
--- ファイル名: 05_create_optimization_procedure.sql
--- 作成日: 2025-01-05
--- 説明: 逐次最適化のメインロジック - 37回のループで最も説明力の高い指標から順に係数を最適化
---       処理済み指標は自動的に除外され、重複なく全指標を最適化
+-- ファイル名: 05_create_optimization_procedure_v2.sql
+-- 作成日: 2025-01-06
+-- 説明: 逐次最適化のメインロジック - 係数の下限値制約を追加
+--       最小係数を0.01に設定して数値安定性を確保
+-- 変更点: 
+--       1. new_coefficient計算時に下限値0.01を設定
+--       2. スコア計算時の下限値を0.01に引き上げ
 -- ============================================================================
 
 -- ============================================================================
@@ -77,7 +80,8 @@ BEGIN
     SELECT 
       sc.*,
       -- 現在のスコア（37指標の係数の積）- 対数変換で計算
-      EXP(SUM(LN(GREATEST(target_coefficient, 0.0001))) OVER (
+      -- 下限値を0.01に引き上げて数値安定性を確保
+      EXP(SUM(LN(GREATEST(target_coefficient, 0.01))) OVER (
         PARTITION BY signal_date, stock_code
       )) as current_score
     FROM score_calculation sc;
@@ -90,7 +94,8 @@ BEGIN
       COUNT(*) as sample_count,
       AVG(cs.actual_touch) as raw_touch_rate,
       -- 他の指標の影響を除いた補正後タッチ率
-      AVG(cs.actual_touch * cs.current_score / GREATEST(cs.target_coefficient, 0.0001)) as corrected_touch_rate
+      -- 下限値を0.01に引き上げ
+      AVG(cs.actual_touch * cs.current_score / GREATEST(cs.target_coefficient, 0.01)) as corrected_touch_rate
     FROM current_scores cs
     GROUP BY cs.signal_type, cs.signal_bin
     HAVING COUNT(*) >= 10;  -- 最低10サンプル
@@ -134,10 +139,13 @@ BEGIN
         ctr.signal_bin,
         ctr.corrected_touch_rate,
         ctr.raw_touch_rate,
-        -- 全体平均が1.0になるように正規化
-        SAFE_DIVIDE(
-          ctr.corrected_touch_rate,
-          AVG(ctr.corrected_touch_rate) OVER (PARTITION BY ctr.signal_type)
+        -- 全体平均が1.0になるように正規化し、下限値0.01を設定
+        GREATEST(
+          SAFE_DIVIDE(
+            ctr.corrected_touch_rate,
+            AVG(ctr.corrected_touch_rate) OVER (PARTITION BY ctr.signal_type)
+          ),
+          0.01  -- 最小係数値を0.01に設定
         ) as new_coefficient
       FROM corrected_touch_rates ctr
       WHERE ctr.signal_type = best_signal_type;
@@ -279,3 +287,15 @@ BEGIN
   FROM final_summary;
   
 END;
+
+-- ============================================================================
+-- プロシージャ作成確認
+-- ============================================================================
+SELECT 
+  '✅ optimize_single_metric プロシージャ作成完了（v2）' as status,
+  '主な変更点:' as changes,
+  '1. new_coefficient計算時に下限値0.01を設定' as change_1,
+  '2. current_score計算時の下限値を0.01に変更' as change_2,
+  '3. corrected_touch_rate計算時の下限値を0.01に変更' as change_3,
+  '極小係数による数値不安定性を防止' as benefit,
+  CURRENT_TIMESTAMP() as created_at;
