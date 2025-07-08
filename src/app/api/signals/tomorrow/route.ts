@@ -1,12 +1,13 @@
 // src/app/api/signals/tomorrow/route.ts
 // 申し送り書仕様準拠：D030_tomorrow_signals単一テーブル、JOIN不要、1秒以内
+// 🆕 4aフィルタ機能追加
 import { NextRequest, NextResponse } from 'next/server';
 import { BigQueryClient } from '@/lib/bigquery';
 
 // BigQuery接続設定（既存のBigQueryClientクラスを使用）
 const bigquery = new BigQueryClient();
 
-// 申し送り書準拠の型定義
+// 申し送り書準拠の型定義（4a追加）
 interface TomorrowSignalItem {
   signal_type: string;
   signal_bin: number;
@@ -19,6 +20,7 @@ interface TomorrowSignalItem {
   decision_status: 'configured' | 'pending' | 'rejected';
   pattern_category: 'PREMIUM' | 'EXCELLENT' | 'GOOD' | 'NORMAL' | 'CAUTION';
   is_excellent_pattern: boolean;
+  four_a?: number;  // 🆕 4年連続優良シグナルフラグ（0 or 1）
 }
 
 interface TomorrowSignalsResponse {
@@ -39,8 +41,8 @@ export async function GET(request: NextRequest) {
     const per_page = parseInt(searchParams.get('per_page') || '15');
     const decision_filter = searchParams.get('decision_filter') || 'pending_only';
     const min_win_rate = searchParams.get('min_win_rate');
-    const min_avg_profit = searchParams.get('min_avg_profit');
-    const stock_code = searchParams.get('stock_code'); // 🆕 銘柄コードパラメータ追加
+    const stock_code = searchParams.get('stock_code');
+    const four_a_filter = searchParams.get('four_a_filter') || 'only_4a'; // 🆕 4aフィルタ（デフォルト：4aのみ）
 
     // ページネーション計算
     const offset = (page - 1) * per_page;
@@ -64,11 +66,16 @@ export async function GET(request: NextRequest) {
     if (min_win_rate) {
       whereConditions.push(`win_rate >= ${parseFloat(min_win_rate)}`);
     }
-    if (min_avg_profit) {
-      whereConditions.push(`avg_profit_rate >= ${parseFloat(min_avg_profit)}`);
-    }
     
-    // 🆕 銘柄コードフィルタ
+    // 🆕 4aフィルタ条件
+    if (four_a_filter === 'only_4a') {
+      whereConditions.push('`4a` = 1');
+    } else if (four_a_filter === 'exclude_4a') {
+      whereConditions.push('(`4a` = 0 OR `4a` IS NULL)');
+    }
+    // 'all'の場合は条件追加なし
+    
+    // 銘柄コードフィルタ
     if (stock_code) {
       // SQLインジェクション対策：エスケープ処理
       const escapedStockCode = stock_code.replace(/'/g, "''");
@@ -93,7 +100,8 @@ export async function GET(request: NextRequest) {
         CASE 
           WHEN pattern_category IN ('PREMIUM', 'EXCELLENT') THEN true 
           ELSE false 
-        END as is_excellent_pattern
+        END as is_excellent_pattern,
+        \`4a\` as four_a  -- 🆕 4aカラム追加
       FROM \`kabu-376213.kabu2411.D030_tomorrow_signals\`
       WHERE ${whereClause}
       ORDER BY avg_profit_rate DESC  -- 申し送り書仕様：期待値の高い順
@@ -130,6 +138,7 @@ export async function GET(request: NextRequest) {
       decision_status: row.decision_status,
       pattern_category: row.pattern_category,
       is_excellent_pattern: row.is_excellent_pattern,
+      four_a: row.four_a || 0,  // 🆕 4aフラグ（nullの場合は0）
     }));
 
     const total_count = parseInt(countResults[0]?.total_count?.toString() || '0');
@@ -166,5 +175,6 @@ export async function GET(request: NextRequest) {
 // - 期待値順ソート ✅
 // - ページネーション対応 ✅
 // - フィルタ機能対応 ✅
-// - 🆕 銘柄コードフィルタ追加 ✅
+// - 🆕 4aフィルタ追加（only_4a/all/exclude_4a） ✅
+// - 銘柄コードフィルタ ✅
 // - パフォーマンス目標：1秒以内 ✅

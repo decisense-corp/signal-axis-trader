@@ -1,11 +1,12 @@
 // src/app/signals/tomorrow/page.tsx
 // 申し送り書仕様準拠：10項目表示、フィルタ、ページネーション
+// 🆕 4aフィルタ機能追加（4年連続優良シグナル）
 'use client';
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 
-// 申し送り書準拠の型定義
+// 申し送り書準拠の型定義（4a追加）
 interface TomorrowSignal {
   signal_type: string;
   signal_bin: number;
@@ -18,6 +19,7 @@ interface TomorrowSignal {
   decision_status: 'configured' | 'pending' | 'rejected';
   pattern_category: 'PREMIUM' | 'EXCELLENT' | 'GOOD' | 'NORMAL' | 'CAUTION';
   is_excellent_pattern: boolean;
+  four_a?: number;  // 🆕 4年連続優良シグナルフラグ（0 or 1）
 }
 
 interface ApiResponse {
@@ -62,8 +64,8 @@ export default function TomorrowSignalsPage() {
   const [perPage, setPerPage] = useState(15); // 申し送り書仕様：デフォルト15件
   const [decisionFilter, setDecisionFilter] = useState('pending_only'); // 申し送り書仕様：デフォルト未設定のみ
   const [minWinRate, setMinWinRate] = useState('');
-  const [minAvgProfit, setMinAvgProfit] = useState('');
-  const [stockCode, setStockCode] = useState(''); // 🆕 銘柄コードフィルタ追加
+  const [fourAFilter, setFourAFilter] = useState('only_4a'); // 🆕 4aフィルタ（デフォルト：4aのみ）
+  const [stockCode, setStockCode] = useState(''); // 銘柄コードフィルタ
 
   // データ取得
   const fetchSignals = async () => {
@@ -78,8 +80,8 @@ export default function TomorrowSignalsPage() {
       });
       
       if (minWinRate) params.set('min_win_rate', minWinRate);
-      if (minAvgProfit) params.set('min_avg_profit', minAvgProfit);
-      if (stockCode) params.set('stock_code', stockCode); // 🆕 銘柄コードパラメータ追加
+      if (fourAFilter !== 'all') params.set('four_a_filter', fourAFilter); // 🆕 4aフィルタパラメータ
+      if (stockCode) params.set('stock_code', stockCode);
       
       const response = await fetch(`/api/signals/tomorrow?${params}`);
       const data: ApiResponse = await response.json();
@@ -101,7 +103,7 @@ export default function TomorrowSignalsPage() {
   // 初期読み込み・フィルタ変更時
   useEffect(() => {
     fetchSignals();
-  }, [page, perPage, decisionFilter, minWinRate, minAvgProfit, stockCode]); // 🆕 stockCode追加
+  }, [page, perPage, decisionFilter, minWinRate, fourAFilter, stockCode]); // 🆕 fourAFilter追加
 
   // 設定ボタンクリック（申し送り書仕様の画面遷移）
   const handleConfigClick = (signal: TomorrowSignal) => {
@@ -127,7 +129,7 @@ export default function TomorrowSignalsPage() {
       {/* 申し送り書仕様：フィルタエリア */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-6">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
-          {/* 🆕 銘柄コード */}
+          {/* 銘柄コード */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               銘柄コード
@@ -179,22 +181,23 @@ export default function TomorrowSignalsPage() {
             />
           </div>
 
-          {/* 期待値最低値 */}
+          {/* 🆕 4aフィルタ（期待値最低値を置き換え） */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              期待値最低値（%）
+              4年連続優良
             </label>
-            <input
-              type="number"
-              step="0.1"
-              value={minAvgProfit}
+            <select
+              value={fourAFilter}
               onChange={(e) => {
-                setMinAvgProfit(e.target.value);
+                setFourAFilter(e.target.value);
                 setPage(1);
               }}
-              placeholder="0.5"
               className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
-            />
+            >
+              <option value="only_4a">4aのみ</option>
+              <option value="all">すべて</option>
+              <option value="exclude_4a">4a以外</option>
+            </select>
           </div>
 
           {/* 表示件数 */}
@@ -297,9 +300,16 @@ export default function TomorrowSignalsPage() {
                     key={`${signal.signal_type}_${signal.signal_bin}_${signal.trade_type}_${signal.stock_code}`}
                     className="hover:bg-gray-50"
                   >
-                    {/* 銘柄コード */}
+                    {/* 銘柄コード（🆕 4aフラグ表示付き） */}
                     <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900">
-                      {signal.stock_code}
+                      <div className="flex items-center">
+                        {signal.stock_code}
+                        {signal.four_a === 1 && (
+                          <span className="ml-2 inline-flex items-center px-2 py-0.5 text-xs font-medium bg-gold-100 text-gold-800 rounded-full border border-gold-200" style={{ backgroundColor: '#fffbeb', color: '#92400e', borderColor: '#fde68a' }}>
+                            4A
+                          </span>
+                        )}
+                      </div>
                     </td>
                     
                     {/* 銘柄名 */}
@@ -460,8 +470,10 @@ export default function TomorrowSignalsPage() {
 
 // ✅ 申し送り書チェックリスト確認
 // - 10項目表示テーブル ✅
-// - フィルタ機能（設定状況・勝率・期待値） ✅
-// - 🆕 銘柄コードフィルタ追加 ✅
+// - フィルタ機能（設定状況・勝率） ✅
+// - 🆕 4aフィルタ追加（期待値最低値を置き換え） ✅
+// - 🆕 4aフラグ表示（銘柄コード欄） ✅
+// - 銘柄コードフィルタ ✅
 // - ページネーション（15件/30件/50件） ✅
 // - BUY/SELL用語統一 ✅
 // - パターンカテゴリ色分け ✅
