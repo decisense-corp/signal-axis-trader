@@ -1,8 +1,8 @@
 -- ============================================================================
--- ファイル名: calculate_daily_scores.sql
--- 説明: 指定日付のスコアを計算してdaily_8indicator_scoresテーブルに追加
+-- ファイル名: calculate_daily_scores_12indicators.sql
+-- 説明: 指定日付のスコアを計算してdaily_8indicator_scoresテーブルに追加（12指標対応）
 --       D010_basic_resultsをソースとして使用
--- 作成日: 2025-01-09
+-- 変更点: 新4指標（UD75P, DD75P, UC3P, DC3P）を追加
 -- ============================================================================
 
 -- ============================================================================
@@ -12,9 +12,10 @@ DECLARE target_date DATE DEFAULT DATE('2025-01-08');  -- 計算対象日付
 
 -- 処理開始メッセージ
 SELECT 
-  CONCAT('🚀 ', CAST(target_date AS STRING), ' のスコア計算開始') as message,
+  CONCAT('🚀 ', CAST(target_date AS STRING), ' のスコア計算開始（12指標対応）') as message,
   'ソーステーブル: D010_basic_results' as source_table,
   '係数テーブル: signal_coefficients_8indicators' as coefficient_table,
+  '指標数: 既存8指標 + 新4指標 = 12指標' as indicators_info,
   CURRENT_TIMESTAMP() as start_time;
 
 -- ============================================================================
@@ -25,17 +26,21 @@ WHERE signal_date = target_date;
 
 SELECT 
   CONCAT('✅ ', CAST(target_date AS STRING), ' の既存データ削除完了') as status,
-  '次: スコア計算処理' as next_step;
+  '次: 12指標スコア計算処理' as next_step;
 
 -- ============================================================================
--- Step 2: 指定日付のスコア計算と保存
+-- Step 2: 指定日付のスコア計算と保存（12指標対応）
 -- ============================================================================
 INSERT INTO `kabu-376213.kabu2411.daily_8indicator_scores`
 (signal_date, stock_code, stock_name,
  score_buy_h3p, score_buy_h1p, score_buy_l3p, score_buy_l1p,
  score_buy_cu3p, score_buy_cu1p, score_buy_cd3p, score_buy_cd1p,
+ -- 新4指標BUY側
+ score_buy_ud75p, score_buy_dd75p, score_buy_uc3p, score_buy_dc3p,
  score_sell_h3p, score_sell_h1p, score_sell_l3p, score_sell_l1p,
  score_sell_cu3p, score_sell_cu1p, score_sell_cd3p, score_sell_cd1p,
+ -- 新4指標SELL側
+ score_sell_ud75p, score_sell_dd75p, score_sell_uc3p, score_sell_dc3p,
  composite_score_buy, composite_score_sell,
  indicators_used_count, calculated_at)
 WITH base_data AS (
@@ -56,7 +61,7 @@ score_components AS (
     d.signal_type,
     d.signal_bin,
     d.trade_type,
-    -- BUY側の係数
+    -- BUY側の既存8指標係数
     cb.coef_h3p as buy_coef_h3p,
     cb.coef_h1p as buy_coef_h1p,
     cb.coef_l3p as buy_coef_l3p,
@@ -65,7 +70,12 @@ score_components AS (
     cb.coef_cu1p as buy_coef_cu1p,
     cb.coef_cd3p as buy_coef_cd3p,
     cb.coef_cd1p as buy_coef_cd1p,
-    -- SELL側の係数
+    -- BUY側の新4指標係数
+    cb.coef_ud75p as buy_coef_ud75p,
+    cb.coef_dd75p as buy_coef_dd75p,
+    cb.coef_uc3p as buy_coef_uc3p,
+    cb.coef_dc3p as buy_coef_dc3p,
+    -- SELL側の既存8指標係数
     cs.coef_h3p as sell_coef_h3p,
     cs.coef_h1p as sell_coef_h1p,
     cs.coef_l3p as sell_coef_l3p,
@@ -73,7 +83,12 @@ score_components AS (
     cs.coef_cu3p as sell_coef_cu3p,
     cs.coef_cu1p as sell_coef_cu1p,
     cs.coef_cd3p as sell_coef_cd3p,
-    cs.coef_cd1p as sell_coef_cd1p
+    cs.coef_cd1p as sell_coef_cd1p,
+    -- SELL側の新4指標係数
+    cs.coef_ud75p as sell_coef_ud75p,
+    cs.coef_dd75p as sell_coef_dd75p,
+    cs.coef_uc3p as sell_coef_uc3p,
+    cs.coef_dc3p as sell_coef_dc3p
   FROM `kabu-376213.kabu2411.D010_basic_results` d
   LEFT JOIN `kabu-376213.kabu2411.signal_coefficients_8indicators` cb
     ON d.signal_type = cb.signal_type 
@@ -90,7 +105,7 @@ log_scores AS (
   SELECT 
     signal_date,
     stock_code,
-    -- BUY側の8指標スコア（対数和）
+    -- BUY側の既存8指標スコア（対数和）
     SUM(LN(GREATEST(buy_coef_h3p, 0.01))) as log_score_buy_h3p,
     SUM(LN(GREATEST(buy_coef_h1p, 0.01))) as log_score_buy_h1p,
     SUM(LN(GREATEST(buy_coef_l3p, 0.01))) as log_score_buy_l3p,
@@ -99,7 +114,12 @@ log_scores AS (
     SUM(LN(GREATEST(buy_coef_cu1p, 0.01))) as log_score_buy_cu1p,
     SUM(LN(GREATEST(buy_coef_cd3p, 0.01))) as log_score_buy_cd3p,
     SUM(LN(GREATEST(buy_coef_cd1p, 0.01))) as log_score_buy_cd1p,
-    -- SELL側の8指標スコア（対数和）
+    -- BUY側の新4指標スコア（対数和）
+    SUM(LN(GREATEST(buy_coef_ud75p, 0.01))) as log_score_buy_ud75p,
+    SUM(LN(GREATEST(buy_coef_dd75p, 0.01))) as log_score_buy_dd75p,
+    SUM(LN(GREATEST(buy_coef_uc3p, 0.01))) as log_score_buy_uc3p,
+    SUM(LN(GREATEST(buy_coef_dc3p, 0.01))) as log_score_buy_dc3p,
+    -- SELL側の既存8指標スコア（対数和）
     SUM(LN(GREATEST(sell_coef_h3p, 0.01))) as log_score_sell_h3p,
     SUM(LN(GREATEST(sell_coef_h1p, 0.01))) as log_score_sell_h1p,
     SUM(LN(GREATEST(sell_coef_l3p, 0.01))) as log_score_sell_l3p,
@@ -108,6 +128,11 @@ log_scores AS (
     SUM(LN(GREATEST(sell_coef_cu1p, 0.01))) as log_score_sell_cu1p,
     SUM(LN(GREATEST(sell_coef_cd3p, 0.01))) as log_score_sell_cd3p,
     SUM(LN(GREATEST(sell_coef_cd1p, 0.01))) as log_score_sell_cd1p,
+    -- SELL側の新4指標スコア（対数和）
+    SUM(LN(GREATEST(sell_coef_ud75p, 0.01))) as log_score_sell_ud75p,
+    SUM(LN(GREATEST(sell_coef_dd75p, 0.01))) as log_score_sell_dd75p,
+    SUM(LN(GREATEST(sell_coef_uc3p, 0.01))) as log_score_sell_uc3p,
+    SUM(LN(GREATEST(sell_coef_dc3p, 0.01))) as log_score_sell_dc3p,
     COUNT(DISTINCT signal_type) as indicators_used
   FROM score_components
   GROUP BY signal_date, stock_code
@@ -116,7 +141,7 @@ SELECT
   bd.signal_date,
   bd.stock_code,
   bd.stock_name,
-  -- 8指標のスコア（BUY）- 対数スケール
+  -- 既存8指標のスコア（BUY）- 対数スケール
   ROUND(ls.log_score_buy_h3p, 6) as score_buy_h3p,
   ROUND(ls.log_score_buy_h1p, 6) as score_buy_h1p,
   ROUND(ls.log_score_buy_l3p, 6) as score_buy_l3p,
@@ -125,7 +150,12 @@ SELECT
   ROUND(ls.log_score_buy_cu1p, 6) as score_buy_cu1p,
   ROUND(ls.log_score_buy_cd3p, 6) as score_buy_cd3p,
   ROUND(ls.log_score_buy_cd1p, 6) as score_buy_cd1p,
-  -- 8指標のスコア（SELL）- 対数スケール
+  -- 新4指標のスコア（BUY）- 対数スケール
+  ROUND(ls.log_score_buy_ud75p, 6) as score_buy_ud75p,
+  ROUND(ls.log_score_buy_dd75p, 6) as score_buy_dd75p,
+  ROUND(ls.log_score_buy_uc3p, 6) as score_buy_uc3p,
+  ROUND(ls.log_score_buy_dc3p, 6) as score_buy_dc3p,
+  -- 既存8指標のスコア（SELL）- 対数スケール
   ROUND(ls.log_score_sell_h3p, 6) as score_sell_h3p,
   ROUND(ls.log_score_sell_h1p, 6) as score_sell_h1p,
   ROUND(ls.log_score_sell_l3p, 6) as score_sell_l3p,
@@ -134,6 +164,11 @@ SELECT
   ROUND(ls.log_score_sell_cu1p, 6) as score_sell_cu1p,
   ROUND(ls.log_score_sell_cd3p, 6) as score_sell_cd3p,
   ROUND(ls.log_score_sell_cd1p, 6) as score_sell_cd1p,
+  -- 新4指標のスコア（SELL）- 対数スケール
+  ROUND(ls.log_score_sell_ud75p, 6) as score_sell_ud75p,
+  ROUND(ls.log_score_sell_dd75p, 6) as score_sell_dd75p,
+  ROUND(ls.log_score_sell_uc3p, 6) as score_sell_uc3p,
+  ROUND(ls.log_score_sell_dc3p, 6) as score_sell_dc3p,
   -- 統合スコア（将来の拡張用 - 現時点ではNULL）
   NULL as composite_score_buy,
   NULL as composite_score_sell,
@@ -146,39 +181,79 @@ JOIN log_scores ls
   AND bd.stock_code = ls.stock_code;
 
 -- ============================================================================
--- Step 3: 処理結果の確認
+-- Step 3: 処理結果の確認（12指標対応）
 -- ============================================================================
 WITH process_summary AS (
   SELECT 
     COUNT(*) as records_created,
     COUNT(DISTINCT stock_code) as unique_stocks,
+    -- 既存指標の統計
     AVG(score_buy_h3p) as avg_buy_h3p,
     MIN(score_buy_h3p) as min_buy_h3p,
-    MAX(score_buy_h3p) as max_buy_h3p
+    MAX(score_buy_h3p) as max_buy_h3p,
+    -- 新4指標の統計
+    AVG(score_buy_ud75p) as avg_buy_ud75p,
+    AVG(score_buy_dd75p) as avg_buy_dd75p,
+    AVG(score_buy_uc3p) as avg_buy_uc3p,
+    AVG(score_buy_dc3p) as avg_buy_dc3p,
+    -- 新4指標の計算確認
+    COUNT(CASE WHEN score_buy_ud75p IS NOT NULL THEN 1 END) as ud75p_calculated,
+    COUNT(CASE WHEN score_buy_dd75p IS NOT NULL THEN 1 END) as dd75p_calculated,
+    COUNT(CASE WHEN score_buy_uc3p IS NOT NULL THEN 1 END) as uc3p_calculated,
+    COUNT(CASE WHEN score_buy_dc3p IS NOT NULL THEN 1 END) as dc3p_calculated
   FROM `kabu-376213.kabu2411.daily_8indicator_scores`
   WHERE signal_date = target_date
 )
 SELECT 
-  CONCAT('✅ ', CAST(target_date AS STRING), ' のスコア計算完了！') as status,
+  CONCAT('✅ ', CAST(target_date AS STRING), ' のスコア計算完了！（12指標対応）') as status,
   CONCAT(FORMAT("%'d", records_created), ' レコード作成') as records_info,
   CONCAT(unique_stocks, ' 銘柄') as stocks_processed,
-  CONCAT('H3P(BUY)平均: ', ROUND(avg_buy_h3p, 3)) as h3p_avg,
-  CONCAT('H3P(BUY)範囲: ', ROUND(min_buy_h3p, 3), ' 〜 ', ROUND(max_buy_h3p, 3)) as h3p_range,
+  '既存8指標 + 新4指標 = 12指標スコア計算完了' as indicators_summary,
+  CONCAT('既存H3P(BUY)平均: ', ROUND(avg_buy_h3p, 3)) as h3p_avg,
+  CONCAT('新UD75P(BUY)平均: ', ROUND(avg_buy_ud75p, 3)) as ud75p_avg,
+  CONCAT('新4指標計算件数: UD75P=', ud75p_calculated, ', DD75P=', dd75p_calculated, 
+         ', UC3P=', uc3p_calculated, ', DC3P=', dc3p_calculated) as new_indicators_count,
   CURRENT_TIMESTAMP() as completed_at
 FROM process_summary;
 
 -- ============================================================================
--- Step 4: 高スコア銘柄のサンプル表示（オプション）
+-- Step 4: 高スコア銘柄のサンプル表示（12指標対応）
 -- ============================================================================
 SELECT 
-  CONCAT('🎯 ', CAST(target_date AS STRING), ' の高スコア銘柄TOP10（BUY・H3P基準）') as report_type,
+  CONCAT('🎯 ', CAST(target_date AS STRING), ' の高スコア銘柄TOP10（既存H3P + 新UD75P基準）') as report_type,
+  stock_code,
+  stock_name,
+  -- 既存指標
+  ROUND(score_buy_h3p, 3) as h3p_score,
+  ROUND(score_buy_h1p, 3) as h1p_score,
+  ROUND(score_buy_cu3p, 3) as cu3p_score,
+  ROUND(score_buy_cu1p, 3) as cu1p_score,
+  -- 新4指標
+  ROUND(score_buy_ud75p, 3) as ud75p_score,
+  ROUND(score_buy_dd75p, 3) as dd75p_score,
+  ROUND(score_buy_uc3p, 3) as uc3p_score,
+  ROUND(score_buy_dc3p, 3) as dc3p_score
+FROM `kabu-376213.kabu2411.daily_8indicator_scores`
+WHERE signal_date = target_date
+ORDER BY score_buy_h3p DESC  -- 既存H3Pでソート
+LIMIT 10
+
+UNION ALL
+
+-- 新4指標UD75P基準でのTOP10
+SELECT 
+  CONCAT('🎯 ', CAST(target_date AS STRING), ' の高方向性銘柄TOP10（新UD75P基準）') as report_type,
   stock_code,
   stock_name,
   ROUND(score_buy_h3p, 3) as h3p_score,
   ROUND(score_buy_h1p, 3) as h1p_score,
   ROUND(score_buy_cu3p, 3) as cu3p_score,
-  ROUND(score_buy_cu1p, 3) as cu1p_score
+  ROUND(score_buy_cu1p, 3) as cu1p_score,
+  ROUND(score_buy_ud75p, 3) as ud75p_score,
+  ROUND(score_buy_dd75p, 3) as dd75p_score,
+  ROUND(score_buy_uc3p, 3) as uc3p_score,
+  ROUND(score_buy_dc3p, 3) as dc3p_score
 FROM `kabu-376213.kabu2411.daily_8indicator_scores`
 WHERE signal_date = target_date
-ORDER BY score_buy_h3p DESC
+ORDER BY score_buy_ud75p DESC  -- 新UD75Pでソート
 LIMIT 10;
