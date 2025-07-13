@@ -1,8 +1,8 @@
 -- ============================================================================
--- ファイル名: q03_calculate_tomorrow_scores_13indicators.sql
--- 説明: D030_tomorrow_signalsの明日予定データにスコアを計算（13指標対応）
+-- ファイル名: q03_calculate_tomorrow_scores_15indicators.sql
+-- 説明: D030_tomorrow_signalsの明日予定データにスコアを計算（15指標対応）
 --       target_dateをsignal_dateとして扱う
--- 変更点: 方向性スコア（DIRECTION）を追加
+-- 変更点: ボラティリティスコア（VOL3P, VOL5P）を追加
 -- ============================================================================
 
 -- パラメータ設定
@@ -10,15 +10,16 @@ DECLARE target_date DATE DEFAULT DATE('2025-07-14');  -- 計算対象日付
 
 -- 処理開始メッセージ
 SELECT 
-  CONCAT('🚀 ', CAST(target_date AS STRING), ' の明日予定スコア計算開始（13指標対応）') as message,
+  CONCAT('🚀 ', CAST(target_date AS STRING), ' の明日予定スコア計算開始（15指標対応）') as message,
   'ソーステーブル: D030_tomorrow_signals' as source_table,
+  '指標数: 既存8 + 新4 + 方向性 + ボラティリティ2 = 15指標' as indicators_info,
   CURRENT_TIMESTAMP() as start_time;
 
 -- Step 1: 既存データ削除
 DELETE FROM `kabu-376213.kabu2411.daily_8indicator_scores`
 WHERE signal_date = target_date;
 
--- Step 2: スコア計算と保存（13指標対応）
+-- Step 2: スコア計算と保存（15指標対応）
 INSERT INTO `kabu-376213.kabu2411.daily_8indicator_scores`
 (signal_date, stock_code, stock_name,
  score_buy_h3p, score_buy_h1p, score_buy_l3p, score_buy_l1p,
@@ -33,6 +34,8 @@ INSERT INTO `kabu-376213.kabu2411.daily_8indicator_scores`
  score_sell_ud75p, score_sell_dd75p, score_sell_uc3p, score_sell_dc3p,
  -- 方向性スコアSELL側
  score_sell_direction,
+ -- ボラティリティスコア（新規追加）
+ score_volatility_3p, score_volatility_5p,
  composite_score_buy, composite_score_sell,
  indicators_used_count, calculated_at)
 WITH base_data AS (
@@ -68,6 +71,9 @@ score_components AS (
     cb.coef_dc3p as buy_coef_dc3p,
     -- BUY側の方向性係数
     cb.coef_direction as buy_coef_direction,
+    -- BUY側のボラティリティ係数（新規追加）
+    cb.coef_vol3p as buy_coef_vol3p,
+    cb.coef_vol5p as buy_coef_vol5p,
     -- SELL側の既存8指標係数
     cs.coef_h3p as sell_coef_h3p,
     cs.coef_h1p as sell_coef_h1p,
@@ -83,7 +89,10 @@ score_components AS (
     cs.coef_uc3p as sell_coef_uc3p,
     cs.coef_dc3p as sell_coef_dc3p,
     -- SELL側の方向性係数
-    cs.coef_direction as sell_coef_direction
+    cs.coef_direction as sell_coef_direction,
+    -- SELL側のボラティリティ係数（新規追加）
+    cs.coef_vol3p as sell_coef_vol3p,
+    cs.coef_vol5p as sell_coef_vol5p
   FROM `kabu-376213.kabu2411.D030_tomorrow_signals` d
   LEFT JOIN `kabu-376213.kabu2411.signal_coefficients_8indicators` cb
     ON d.signal_type = cb.signal_type 
@@ -131,6 +140,9 @@ log_scores AS (
     SUM(LN(GREATEST(sell_coef_dc3p, 0.01))) as log_score_sell_dc3p,
     -- SELL側の方向性スコア（対数和）
     SUM(LN(GREATEST(sell_coef_direction, 0.01))) as log_score_sell_direction,
+    -- ボラティリティスコア（BUY/SELL平均、新規追加）
+    SUM(LN(GREATEST((buy_coef_vol3p + sell_coef_vol3p) / 2, 0.01))) as log_score_vol3p,
+    SUM(LN(GREATEST((buy_coef_vol5p + sell_coef_vol5p) / 2, 0.01))) as log_score_vol5p,
     COUNT(DISTINCT signal_type) as indicators_used
   FROM score_components
   GROUP BY signal_date, stock_code
@@ -171,7 +183,10 @@ SELECT
   ROUND(ls.log_score_sell_dc3p, 6) as score_sell_dc3p,
   -- 方向性スコアSELL側
   ROUND(ls.log_score_sell_direction, 6) as score_sell_direction,
-  -- 統合スコア（変更なし）
+  -- ボラティリティスコア（新規追加）
+  ROUND(ls.log_score_vol3p, 6) as score_volatility_3p,
+  ROUND(ls.log_score_vol5p, 6) as score_volatility_5p,
+  -- 統合スコア
   NULL as composite_score_buy,
   NULL as composite_score_sell,
   ls.indicators_used as indicators_used_count,
@@ -181,7 +196,7 @@ JOIN log_scores ls
   ON bd.signal_date = ls.signal_date
   AND bd.stock_code = ls.stock_code;
 
--- Step 3: 処理結果確認（13指標対応）
+-- Step 3: 処理結果確認（15指標対応）
 WITH score_summary AS (
   SELECT 
     COUNT(*) as records_created,
@@ -197,32 +212,57 @@ WITH score_summary AS (
     -- 方向性スコアの計算確認
     COUNT(CASE WHEN score_buy_direction IS NOT NULL THEN 1 END) as direction_buy_calculated,
     COUNT(CASE WHEN score_sell_direction IS NOT NULL THEN 1 END) as direction_sell_calculated,
-    -- 方向性スコアの統計
+    -- ボラティリティスコアの計算確認（新規追加）
+    COUNT(CASE WHEN score_volatility_3p IS NOT NULL THEN 1 END) as vol3p_calculated,
+    COUNT(CASE WHEN score_volatility_5p IS NOT NULL THEN 1 END) as vol5p_calculated,
+    -- 統計情報
     ROUND(AVG(score_buy_direction), 2) as avg_buy_direction,
-    ROUND(AVG(score_sell_direction), 2) as avg_sell_direction
+    ROUND(AVG(score_sell_direction), 2) as avg_sell_direction,
+    ROUND(AVG(score_volatility_3p), 2) as avg_vol3p,
+    ROUND(AVG(score_volatility_5p), 2) as avg_vol5p
   FROM `kabu-376213.kabu2411.daily_8indicator_scores`
   WHERE signal_date = target_date
 )
 SELECT 
-  CONCAT('✅ ', CAST(target_date AS STRING), ' の明日予定スコア計算完了！（13指標対応）') as status,
+  CONCAT('✅ ', CAST(target_date AS STRING), ' の明日予定スコア計算完了！（15指標対応）') as status,
   records_created,
   unique_stocks,
-  '既存8指標 + 新4指標 + 方向性 = 13指標スコア計算完了' as expansion_summary,
-  CONCAT('方向性スコア計算: BUY=', direction_buy_calculated, ', SELL=', direction_sell_calculated) as direction_status,
-  CONCAT('方向性平均スコア: BUY=', avg_buy_direction, ', SELL=', avg_sell_direction) as direction_avg_scores
+  '既存8 + 新4 + 方向性 + ボラティリティ2 = 15指標完了' as expansion_summary,
+  CONCAT('方向性: BUY=', direction_buy_calculated, ', SELL=', direction_sell_calculated) as direction_status,
+  CONCAT('ボラティリティ: VOL3P=', vol3p_calculated, ', VOL5P=', vol5p_calculated) as vol_status,
+  CONCAT('平均スコア: VOL3P=', avg_vol3p, ', VOL5P=', avg_vol5p) as vol_avg_scores
 FROM score_summary;
 
--- Step 4: 方向性スコアTOP10表示
+-- Step 4: 高ボラティリティ銘柄TOP10表示
 SELECT 
-  '🎯 明日（' || CAST(target_date AS STRING) || '）の高方向性銘柄TOP10' as report_type,
+  CONCAT('🎯 明日（', CAST(target_date AS STRING), '）の高ボラティリティ銘柄TOP10（3%）') as report_type,
   stock_code,
   stock_name,
+  ROUND(score_volatility_3p, 3) as vol3p_score,
+  ROUND(score_volatility_5p, 3) as vol5p_score,
+  -- 参考：方向性スコア
   ROUND(score_buy_direction, 3) as buy_direction,
   ROUND(score_sell_direction, 3) as sell_direction,
-  -- 参考：既存スコア
+  -- 関連指標
   ROUND(score_buy_h3p, 3) as h3p_score,
-  ROUND(score_buy_cu3p, 3) as cu3p_score
+  ROUND(score_buy_l3p, 3) as l3p_score
 FROM `kabu-376213.kabu2411.daily_8indicator_scores`
 WHERE signal_date = target_date
-ORDER BY score_buy_direction DESC
+ORDER BY score_volatility_3p DESC
+LIMIT 10;
+
+-- 高ボラティリティ銘柄TOP10（5%基準）
+SELECT 
+  CONCAT('🎯 明日（', CAST(target_date AS STRING), '）の高ボラティリティ銘柄TOP10（5%）') as report_type,
+  stock_code,
+  stock_name,
+  ROUND(score_volatility_3p, 3) as vol3p_score,
+  ROUND(score_volatility_5p, 3) as vol5p_score,
+  ROUND(score_buy_direction, 3) as buy_direction,
+  ROUND(score_sell_direction, 3) as sell_direction,
+  ROUND(score_buy_h3p, 3) as h3p_score,
+  ROUND(score_buy_l3p, 3) as l3p_score
+FROM `kabu-376213.kabu2411.daily_8indicator_scores`
+WHERE signal_date = target_date
+ORDER BY score_volatility_5p DESC
 LIMIT 10;
