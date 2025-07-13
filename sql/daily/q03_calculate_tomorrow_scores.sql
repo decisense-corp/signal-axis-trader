@@ -1,16 +1,16 @@
 -- ============================================================================
--- ファイル名: q03_calculate_tomorrow_scores_12indicators.sql
--- 説明: D030_tomorrow_signalsの明日予定データにスコアを計算（12指標対応）
+-- ファイル名: q03_calculate_tomorrow_scores_13indicators.sql
+-- 説明: D030_tomorrow_signalsの明日予定データにスコアを計算（13指標対応）
 --       target_dateをsignal_dateとして扱う
--- 変更点: 新4指標（UD75P, DD75P, UC3P, DC3P）を追加
+-- 変更点: 方向性スコア（DIRECTION）を追加
 -- ============================================================================
 
 -- パラメータ設定
-DECLARE target_date DATE DEFAULT DATE('2025-07-09');  -- 計算対象日付
+DECLARE target_date DATE DEFAULT DATE('2025-07-14');  -- 計算対象日付
 
 -- 処理開始メッセージ
 SELECT 
-  CONCAT('🚀 ', CAST(target_date AS STRING), ' の明日予定スコア計算開始（12指標対応）') as message,
+  CONCAT('🚀 ', CAST(target_date AS STRING), ' の明日予定スコア計算開始（13指標対応）') as message,
   'ソーステーブル: D030_tomorrow_signals' as source_table,
   CURRENT_TIMESTAMP() as start_time;
 
@@ -18,17 +18,21 @@ SELECT
 DELETE FROM `kabu-376213.kabu2411.daily_8indicator_scores`
 WHERE signal_date = target_date;
 
--- Step 2: スコア計算と保存（12指標対応）
+-- Step 2: スコア計算と保存（13指標対応）
 INSERT INTO `kabu-376213.kabu2411.daily_8indicator_scores`
 (signal_date, stock_code, stock_name,
  score_buy_h3p, score_buy_h1p, score_buy_l3p, score_buy_l1p,
  score_buy_cu3p, score_buy_cu1p, score_buy_cd3p, score_buy_cd1p,
  -- 新4指標BUY側
  score_buy_ud75p, score_buy_dd75p, score_buy_uc3p, score_buy_dc3p,
+ -- 方向性スコアBUY側
+ score_buy_direction,
  score_sell_h3p, score_sell_h1p, score_sell_l3p, score_sell_l1p,
  score_sell_cu3p, score_sell_cu1p, score_sell_cd3p, score_sell_cd1p,
  -- 新4指標SELL側
  score_sell_ud75p, score_sell_dd75p, score_sell_uc3p, score_sell_dc3p,
+ -- 方向性スコアSELL側
+ score_sell_direction,
  composite_score_buy, composite_score_sell,
  indicators_used_count, calculated_at)
 WITH base_data AS (
@@ -62,6 +66,8 @@ score_components AS (
     cb.coef_dd75p as buy_coef_dd75p,
     cb.coef_uc3p as buy_coef_uc3p,
     cb.coef_dc3p as buy_coef_dc3p,
+    -- BUY側の方向性係数
+    cb.coef_direction as buy_coef_direction,
     -- SELL側の既存8指標係数
     cs.coef_h3p as sell_coef_h3p,
     cs.coef_h1p as sell_coef_h1p,
@@ -75,7 +81,9 @@ score_components AS (
     cs.coef_ud75p as sell_coef_ud75p,
     cs.coef_dd75p as sell_coef_dd75p,
     cs.coef_uc3p as sell_coef_uc3p,
-    cs.coef_dc3p as sell_coef_dc3p
+    cs.coef_dc3p as sell_coef_dc3p,
+    -- SELL側の方向性係数
+    cs.coef_direction as sell_coef_direction
   FROM `kabu-376213.kabu2411.D030_tomorrow_signals` d
   LEFT JOIN `kabu-376213.kabu2411.signal_coefficients_8indicators` cb
     ON d.signal_type = cb.signal_type 
@@ -105,6 +113,8 @@ log_scores AS (
     SUM(LN(GREATEST(buy_coef_dd75p, 0.01))) as log_score_buy_dd75p,
     SUM(LN(GREATEST(buy_coef_uc3p, 0.01))) as log_score_buy_uc3p,
     SUM(LN(GREATEST(buy_coef_dc3p, 0.01))) as log_score_buy_dc3p,
+    -- BUY側の方向性スコア（対数和）
+    SUM(LN(GREATEST(buy_coef_direction, 0.01))) as log_score_buy_direction,
     -- SELL側の既存8指標スコア（対数和）
     SUM(LN(GREATEST(sell_coef_h3p, 0.01))) as log_score_sell_h3p,
     SUM(LN(GREATEST(sell_coef_h1p, 0.01))) as log_score_sell_h1p,
@@ -119,6 +129,8 @@ log_scores AS (
     SUM(LN(GREATEST(sell_coef_dd75p, 0.01))) as log_score_sell_dd75p,
     SUM(LN(GREATEST(sell_coef_uc3p, 0.01))) as log_score_sell_uc3p,
     SUM(LN(GREATEST(sell_coef_dc3p, 0.01))) as log_score_sell_dc3p,
+    -- SELL側の方向性スコア（対数和）
+    SUM(LN(GREATEST(sell_coef_direction, 0.01))) as log_score_sell_direction,
     COUNT(DISTINCT signal_type) as indicators_used
   FROM score_components
   GROUP BY signal_date, stock_code
@@ -141,6 +153,8 @@ SELECT
   ROUND(ls.log_score_buy_dd75p, 6) as score_buy_dd75p,
   ROUND(ls.log_score_buy_uc3p, 6) as score_buy_uc3p,
   ROUND(ls.log_score_buy_dc3p, 6) as score_buy_dc3p,
+  -- 方向性スコアBUY側
+  ROUND(ls.log_score_buy_direction, 6) as score_buy_direction,
   -- 既存8指標SELL側スコア値
   ROUND(ls.log_score_sell_h3p, 6) as score_sell_h3p,
   ROUND(ls.log_score_sell_h1p, 6) as score_sell_h1p,
@@ -155,6 +169,8 @@ SELECT
   ROUND(ls.log_score_sell_dd75p, 6) as score_sell_dd75p,
   ROUND(ls.log_score_sell_uc3p, 6) as score_sell_uc3p,
   ROUND(ls.log_score_sell_dc3p, 6) as score_sell_dc3p,
+  -- 方向性スコアSELL側
+  ROUND(ls.log_score_sell_direction, 6) as score_sell_direction,
   -- 統合スコア（変更なし）
   NULL as composite_score_buy,
   NULL as composite_score_sell,
@@ -165,7 +181,7 @@ JOIN log_scores ls
   ON bd.signal_date = ls.signal_date
   AND bd.stock_code = ls.stock_code;
 
--- Step 3: 処理結果確認（12指標対応）
+-- Step 3: 処理結果確認（13指標対応）
 WITH score_summary AS (
   SELECT 
     COUNT(*) as records_created,
@@ -178,21 +194,35 @@ WITH score_summary AS (
     COUNT(CASE WHEN score_buy_dd75p IS NOT NULL THEN 1 END) as dd75p_calculated,
     COUNT(CASE WHEN score_buy_uc3p IS NOT NULL THEN 1 END) as uc3p_calculated,
     COUNT(CASE WHEN score_buy_dc3p IS NOT NULL THEN 1 END) as dc3p_calculated,
-    -- 新4指標スコアサンプル
-    ROUND(AVG(score_buy_ud75p), 2) as avg_ud75p_score,
-    ROUND(AVG(score_buy_dd75p), 2) as avg_dd75p_score,
-    ROUND(AVG(score_buy_uc3p), 2) as avg_uc3p_score,
-    ROUND(AVG(score_buy_dc3p), 2) as avg_dc3p_score
+    -- 方向性スコアの計算確認
+    COUNT(CASE WHEN score_buy_direction IS NOT NULL THEN 1 END) as direction_buy_calculated,
+    COUNT(CASE WHEN score_sell_direction IS NOT NULL THEN 1 END) as direction_sell_calculated,
+    -- 方向性スコアの統計
+    ROUND(AVG(score_buy_direction), 2) as avg_buy_direction,
+    ROUND(AVG(score_sell_direction), 2) as avg_sell_direction
   FROM `kabu-376213.kabu2411.daily_8indicator_scores`
   WHERE signal_date = target_date
 )
 SELECT 
-  CONCAT('✅ ', CAST(target_date AS STRING), ' の明日予定スコア計算完了！（12指標対応）') as status,
+  CONCAT('✅ ', CAST(target_date AS STRING), ' の明日予定スコア計算完了！（13指標対応）') as status,
   records_created,
   unique_stocks,
-  '既存8指標 + 新4指標 = 12指標スコア計算完了' as expansion_summary,
-  CONCAT('新4指標計算: UD75P=', ud75p_calculated, ', DD75P=', dd75p_calculated, 
-         ', UC3P=', uc3p_calculated, ', DC3P=', dc3p_calculated) as new_indicators_status,
-  CONCAT('新4指標平均スコア: UD75P=', avg_ud75p_score, ', DD75P=', avg_dd75p_score,
-         ', UC3P=', avg_uc3p_score, ', DC3P=', avg_dc3p_score) as avg_scores
+  '既存8指標 + 新4指標 + 方向性 = 13指標スコア計算完了' as expansion_summary,
+  CONCAT('方向性スコア計算: BUY=', direction_buy_calculated, ', SELL=', direction_sell_calculated) as direction_status,
+  CONCAT('方向性平均スコア: BUY=', avg_buy_direction, ', SELL=', avg_sell_direction) as direction_avg_scores
 FROM score_summary;
+
+-- Step 4: 方向性スコアTOP10表示
+SELECT 
+  '🎯 明日（' || CAST(target_date AS STRING) || '）の高方向性銘柄TOP10' as report_type,
+  stock_code,
+  stock_name,
+  ROUND(score_buy_direction, 3) as buy_direction,
+  ROUND(score_sell_direction, 3) as sell_direction,
+  -- 参考：既存スコア
+  ROUND(score_buy_h3p, 3) as h3p_score,
+  ROUND(score_buy_cu3p, 3) as cu3p_score
+FROM `kabu-376213.kabu2411.daily_8indicator_scores`
+WHERE signal_date = target_date
+ORDER BY score_buy_direction DESC
+LIMIT 10;
