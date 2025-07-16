@@ -240,38 +240,3 @@ SELECT
   CONCAT('計算件数: VOL3P=', vol3p_calculated, ', VOL5P=', vol5p_calculated) as vol_count,
   CURRENT_TIMESTAMP() as completed_at
 FROM process_summary;
-
--- ============================================================================
--- Step 4: 高ボラティリティ銘柄のサンプル表示
--- ============================================================================
-SELECT 
-  CONCAT('🎯 ', CAST(target_date AS STRING), ' の高ボラティリティ銘柄TOP10（3%）') as report_type,
-  stock_code,
-  stock_name,
-  ROUND(score_volatility_3p, 3) as vol3p_score,
-  ROUND(score_volatility_5p, 3) as vol5p_score,
-  -- 参考：方向性と既存指標
-  ROUND(score_buy_direction, 3) as buy_direction,
-  ROUND(score_sell_direction, 3) as sell_direction,
-  -- ボラティリティ関連指標の平均
-  ROUND((score_buy_h3p + score_buy_l3p + score_buy_cu3p + score_buy_cd3p) / 4, 3) as avg_3p_indicators
-FROM `kabu-376213.kabu2411.daily_8indicator_scores`
-WHERE signal_date = target_date
-ORDER BY score_volatility_3p DESC
-LIMIT 10
-
-UNION ALL
-
-SELECT 
-  CONCAT('🎯 ', CAST(target_date AS STRING), ' の高ボラティリティ銘柄TOP10（5%）') as report_type,
-  stock_code,
-  stock_name,
-  ROUND(score_volatility_3p, 3) as vol3p_score,
-  ROUND(score_volatility_5p, 3) as vol5p_score,
-  ROUND(score_buy_direction, 3) as buy_direction,
-  ROUND(score_sell_direction, 3) as sell_direction,
-  ROUND((score_buy_h3p + score_buy_l3p + score_buy_cu3p + score_buy_cd3p) / 4, 3) as avg_3p_indicators
-FROM `kabu-376213.kabu2411.daily_8indicator_scores`
-WHERE signal_date = target_date
-ORDER BY score_volatility_5p DESC
-LIMIT 10;
