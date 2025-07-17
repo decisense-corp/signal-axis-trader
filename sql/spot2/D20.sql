@@ -639,7 +639,7 @@ signals_with_bins AS (
     s.*,
     COALESCE(
       (SELECT MAX(sb.signal_bin) 
-       FROM `kabu-376213.kabu2411.M010_signal_bins` sb
+       FROM `kabu-376213.kabu2411.M10_signal_bins` sb
        WHERE sb.signal_type = s.signal_type
          AND s.signal_value > sb.lower_bound 
          AND s.signal_value <= sb.upper_bound), 
