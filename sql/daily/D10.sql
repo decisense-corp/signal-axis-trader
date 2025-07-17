@@ -1,35 +1,46 @@
 /*
-ファイル: q01_update_d010_daily_results_single_date.sql
-説明: D010_basic_results 日次増分投入（1日指定版）
-作成日: 2025年1月10日
-実行タイミング: 日次17:00（市場終了後）
-使用方法: target_quote_dateを変更して実行
+ファイル: update_D10_trading_signals_differential_fixed.sql
+説明: D10_trading_signals 差分更新用SQL（変数宣言位置修正版）
+作成日: 2025年1月17日
+目的: 日次バッチ処理用の差分更新
+特徴:
+  - 最終処理日以降のデータのみを追加
+  - 流動性情報（前営業日の出来高・売買代金・売買可能株数）を含む
+  - 既存のCTE構造を活用し、最後に差分判定
+実行時間: 約2-3分（差分データのみ）
 */
 
 -- ============================================================================
--- ⚠️ ここだけ変更してください
+-- 変数宣言（スクリプトの最初に配置）
 -- ============================================================================
-DECLARE target_quote_date DATE DEFAULT '2025-07-08';  -- 処理したいsignal_dateの前営業日
+DECLARE last_signal_date DATE;
 
 -- ============================================================================
--- 以下は変更不要
+-- 差分更新処理
 -- ============================================================================
 
 -- 処理開始メッセージ
 SELECT 
-  '🚀 D010増分投入開始（1日指定版）' as message,
-  target_quote_date as processing_date,
-  (
-    SELECT MIN(tc.Date)
-    FROM `kabu-376213.kabu2411.trading_calendar` tc
-    WHERE tc.Date > target_quote_date AND tc.HolidayDivision = '1'
-  ) as signal_date,
+  '🚀 D10_trading_signals 差分更新開始' as message,
+  '処理方式: 最終処理日以降のデータのみ追加' as method,
   CURRENT_TIMESTAMP() as start_time;
 
--- メイン処理
-INSERT INTO `kabu-376213.kabu2411.D010_basic_results`
+-- 最終処理日の取得
+SET last_signal_date = (
+  SELECT IFNULL(MAX(signal_date), '2022-06-30')
+  FROM `kabu-376213.kabu2411.D10_trading_signals`
+);
+
+-- 確認メッセージ
+SELECT 
+  '📅 最終処理日確認' as status,
+  last_signal_date as last_processed_date,
+  DATE_ADD(last_signal_date, INTERVAL 1 DAY) as update_from_date;
+
+-- データ投入
+INSERT INTO `kabu-376213.kabu2411.D10_trading_signals`
 WITH 
--- 1. 株価データ準備
+-- 1. 株価データ準備（最新日から35日前まで）
 stock_quotes AS (
   SELECT 
     REGEXP_REPLACE(dq.Code, '0$', '') as stock_code,
@@ -53,8 +64,10 @@ stock_quotes AS (
       ORDER BY dq.Date
     ) as prev_value_for_signal
   FROM `kabu-376213.kabu2411.daily_quotes` dq
-  WHERE dq.Date >= DATE_SUB(target_quote_date, INTERVAL 35 DAY)
-    AND dq.Date <= target_quote_date
+  WHERE dq.Date >= DATE_SUB(
+      (SELECT MAX(Date) FROM `kabu-376213.kabu2411.daily_quotes`), 
+      INTERVAL 35 DAY
+    )
     AND dq.Open > 0 AND dq.Close > 0
 ),
 
@@ -241,9 +254,7 @@ all_signals AS (
     'Close Change Rate' as signal_type,
     ROUND((quote_close - prev_close_for_signal) / prev_close_for_signal * 100, 4) as signal_value
   FROM signal_calculations 
-  WHERE prev_close_for_signal > 0 
-    AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
+  WHERE prev_close_for_signal > 0 AND signal_date IS NOT NULL
   
   UNION ALL
   
@@ -254,7 +265,6 @@ all_signals AS (
     ROUND(quote_close / prev_close_for_signal * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE prev_close_for_signal > 0 AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -265,7 +275,6 @@ all_signals AS (
     ROUND(quote_close / ma3_close * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE ma3_close > 0 AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -276,7 +285,6 @@ all_signals AS (
     ROUND(quote_close / ma5_close * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE ma5_close > 0 AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -287,7 +295,6 @@ all_signals AS (
     ROUND(quote_close / ma10_close * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE ma10_close > 0 AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -298,7 +305,6 @@ all_signals AS (
     ROUND(quote_close / max20_close * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE max20_close > 0 AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -309,7 +315,6 @@ all_signals AS (
     ROUND(quote_close / min20_close * 100, 4) as signal_value  
   FROM signal_calculations 
   WHERE min20_close > 0 AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -320,7 +325,6 @@ all_signals AS (
     ROUND(quote_close / quote_open * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE quote_open > 0 AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -331,7 +335,6 @@ all_signals AS (
     ROUND(SAFE_DIVIDE(stddev20_close, ma20_close) * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE ma20_close > 0 AND stddev20_close IS NOT NULL AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
 
   -- ==================== PriceRange系 5指標 ====================
   
@@ -344,7 +347,6 @@ all_signals AS (
     ROUND(SAFE_DIVIDE(quote_close - quote_low, quote_high - quote_low) * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE quote_high > quote_low AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -355,7 +357,6 @@ all_signals AS (
     ROUND(SAFE_DIVIDE(quote_high - quote_close, quote_high - quote_low) * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE quote_high > quote_low AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -366,7 +367,6 @@ all_signals AS (
     ROUND(SAFE_DIVIDE(quote_close - quote_low, quote_high - quote_low) * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE quote_high > quote_low AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -377,7 +377,6 @@ all_signals AS (
     ROUND(quote_close / quote_high * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE quote_high > 0 AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -388,9 +387,8 @@ all_signals AS (
     ROUND(quote_close / quote_low * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE quote_low > 0 AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
 
-  -- ==================== OpenClose系 3指標 ====================
+  -- ==================== OpenClose系 2指標 ====================
   
   UNION ALL
   
@@ -401,7 +399,6 @@ all_signals AS (
     ROUND((quote_close - quote_open) / quote_open * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE quote_open > 0 AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -412,7 +409,6 @@ all_signals AS (
     ROUND(SAFE_DIVIDE(quote_close - quote_open, quote_high - quote_low) * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE quote_high > quote_low AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
 
   -- ==================== Open系 3指標 ====================
   
@@ -425,7 +421,6 @@ all_signals AS (
     ROUND(SAFE_DIVIDE(quote_open - quote_low, quote_high - quote_low) * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE quote_high > quote_low AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -436,7 +431,6 @@ all_signals AS (
     ROUND(SAFE_DIVIDE(quote_high - quote_open, quote_high - quote_low) * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE quote_high > quote_low AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -447,7 +441,6 @@ all_signals AS (
     ROUND(SAFE_DIVIDE(quote_open - quote_low, quote_high - quote_low) * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE quote_high > quote_low AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
 
   -- ==================== Volume系 4指標 ====================
   
@@ -460,7 +453,6 @@ all_signals AS (
     ROUND(quote_volume / prev_volume_for_signal * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE prev_volume_for_signal > 0 AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -471,7 +463,6 @@ all_signals AS (
     ROUND(quote_volume / ma3_volume * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE ma3_volume > 0 AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -482,7 +473,6 @@ all_signals AS (
     ROUND(quote_volume / ma5_volume * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE ma5_volume > 0 AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -493,7 +483,6 @@ all_signals AS (
     ROUND(quote_volume / ma10_volume * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE ma10_volume > 0 AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
 
   -- ==================== Value系 4指標 ====================
   
@@ -506,7 +495,6 @@ all_signals AS (
     ROUND(quote_value / prev_value_for_signal * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE prev_value_for_signal > 0 AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -517,7 +505,6 @@ all_signals AS (
     ROUND(quote_value / ma3_value * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE ma3_value > 0 AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -528,7 +515,6 @@ all_signals AS (
     ROUND(quote_value / ma5_value * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE ma5_value > 0 AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -539,7 +525,6 @@ all_signals AS (
     ROUND(quote_value / ma10_value * 100, 4) as signal_value
   FROM signal_calculations 
   WHERE ma10_value > 0 AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
 
   -- ==================== Score系 10指標 ====================
   
@@ -556,7 +541,6 @@ all_signals AS (
     ) as signal_value
   FROM signal_calculations 
   WHERE quote_open > 0 AND avg_high_open_3d IS NOT NULL AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -571,7 +555,6 @@ all_signals AS (
     ) as signal_value
   FROM signal_calculations 
   WHERE quote_open > 0 AND avg_high_open_7d IS NOT NULL AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -586,7 +569,6 @@ all_signals AS (
     ) as signal_value
   FROM signal_calculations 
   WHERE quote_open > 0 AND avg_high_open_9d IS NOT NULL AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -601,7 +583,6 @@ all_signals AS (
     ) as signal_value
   FROM signal_calculations 
   WHERE quote_open > 0 AND avg_high_open_14d IS NOT NULL AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -616,7 +597,6 @@ all_signals AS (
     ) as signal_value
   FROM signal_calculations 
   WHERE quote_open > 0 AND avg_high_open_20d IS NOT NULL AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -631,7 +611,6 @@ all_signals AS (
     ) as signal_value
   FROM signal_calculations 
   WHERE quote_open > 0 AND avg_open_low_3d IS NOT NULL AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -646,7 +625,6 @@ all_signals AS (
     ) as signal_value
   FROM signal_calculations 
   WHERE quote_open > 0 AND avg_open_low_7d IS NOT NULL AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -661,7 +639,6 @@ all_signals AS (
     ) as signal_value
   FROM signal_calculations 
   WHERE quote_open > 0 AND avg_open_low_9d IS NOT NULL AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -676,7 +653,6 @@ all_signals AS (
     ) as signal_value
   FROM signal_calculations 
   WHERE quote_open > 0 AND avg_open_low_14d IS NOT NULL AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
   
   UNION ALL
   
@@ -691,10 +667,9 @@ all_signals AS (
     ) as signal_value
   FROM signal_calculations 
   WHERE quote_open > 0 AND avg_open_low_20d IS NOT NULL AND signal_date IS NOT NULL
-    AND quote_date = target_quote_date  -- 指定日のみ
 ),
 
--- 4. signal_date当日の株価データを取得（修正版：前営業日も含める）
+-- 4. signal_date当日の株価データを取得（拡張版：前営業日の流動性情報も含む）
 signal_date_quotes AS (
   SELECT 
     REGEXP_REPLACE(Code, '0$', '') as stock_code,
@@ -704,16 +679,24 @@ signal_date_quotes AS (
     Low as signal_day_low,
     Close as signal_day_close,
     Volume as signal_day_volume,
+    TurnoverValue as signal_day_value,
     LAG(Close) OVER (
       PARTITION BY REGEXP_REPLACE(Code, '0$', '') 
       ORDER BY Date
-    ) as signal_prev_close
+    ) as signal_prev_close,
+    -- 前営業日の流動性情報
+    LAG(Volume) OVER (
+      PARTITION BY REGEXP_REPLACE(Code, '0$', '') 
+      ORDER BY Date
+    ) as signal_prev_volume,
+    LAG(TurnoverValue) OVER (
+      PARTITION BY REGEXP_REPLACE(Code, '0$', '') 
+      ORDER BY Date
+    ) as signal_prev_value
   FROM `kabu-376213.kabu2411.daily_quotes`
-  WHERE Date >= target_quote_date  -- 前営業日も含める
-    AND Date <= (
-      SELECT MIN(tc.Date)
-      FROM `kabu-376213.kabu2411.trading_calendar` tc
-      WHERE tc.Date > target_quote_date AND tc.HolidayDivision = '1'
+  WHERE Date >= DATE_SUB(
+      (SELECT MAX(Date) FROM `kabu-376213.kabu2411.daily_quotes`), 
+      INTERVAL 40 DAY  -- signal_dateの分も考慮して少し余裕を持たせる
     )
     AND Open > 0 AND Close > 0
 ),
@@ -734,7 +717,7 @@ signals_with_bins AS (
   FROM all_signals s
 ),
 
--- 6. シグナルデータと当日株価データを結合（修正版）
+-- 6. シグナルデータと当日株価データを結合（流動性情報含む）
 final_data AS (
   SELECT 
     s.signal_date,
@@ -744,13 +727,17 @@ final_data AS (
     s.stock_name,
     s.signal_value,
     
-    -- signal_date当日の株価データを使用
+    -- signal_date当日の株価データ
     sdq.signal_prev_close as prev_close,
     sdq.signal_day_open as day_open,
     sdq.signal_day_high as day_high,
     sdq.signal_day_low as day_low,
     sdq.signal_day_close as day_close,
-    sdq.signal_day_volume as trading_volume,
+    sdq.signal_day_value as trading_volume,
+    
+    -- 前営業日の流動性情報
+    sdq.signal_prev_volume as prev_volume,
+    sdq.signal_prev_value as prev_trading_value,
     
     -- 計算値
     sdq.signal_day_open - sdq.signal_prev_close as prev_close_to_open_gap,
@@ -770,17 +757,16 @@ final_data AS (
     CURRENT_TIMESTAMP() as created_at
     
   FROM signals_with_bins s
-  -- signal_date当日の株価データと結合（signal_dateで絞り込み）
+  -- signal_date当日の株価データと結合
   INNER JOIN signal_date_quotes sdq
     ON s.stock_code = sdq.stock_code 
     AND s.signal_date = sdq.signal_date
   WHERE s.signal_bin IS NOT NULL
     AND sdq.signal_day_open > 0 AND sdq.signal_day_close > 0
     AND sdq.signal_prev_close IS NOT NULL
-    AND sdq.signal_date = s.signal_date  -- signal_dateで絞り込み
 )
 
--- BUY取引結果
+-- BUY取引結果（差分のみ）
 SELECT 
   signal_date,
   signal_type,
@@ -802,12 +788,17 @@ SELECT
   buy_profit_rate as baseline_profit_rate,
   buy_is_win as is_win,
   trading_volume,
+  -- 流動性情報
+  prev_volume,
+  prev_trading_value,
+  CAST(FLOOR(prev_volume * 0.01 / 100) * 100 AS INT64) as tradable_shares,  -- 前営業日出来高の1%、100株単位
   created_at
 FROM final_data
+WHERE signal_date > last_signal_date  -- 差分判定
 
 UNION ALL
 
--- SELL取引結果
+-- SELL取引結果（差分のみ）
 SELECT 
   signal_date,
   signal_type,
@@ -829,20 +820,56 @@ SELECT
   sell_profit_rate as baseline_profit_rate,
   sell_is_win as is_win,
   trading_volume,
+  -- 流動性情報
+  prev_volume,
+  prev_trading_value,
+  CAST(FLOOR(prev_volume * 0.01 / 100) * 100 AS INT64) as tradable_shares,  -- 前営業日出来高の1%、100株単位
   created_at
-FROM final_data;
+FROM final_data
+WHERE signal_date > last_signal_date;  -- 差分判定
 
 -- ============================================================================
--- 処理完了確認
+-- 完了確認
 -- ============================================================================
 
+-- 処理結果の確認
+WITH update_summary AS (
+  SELECT 
+    COUNT(*) as new_records,
+    COUNT(DISTINCT signal_date) as new_days,
+    MIN(signal_date) as update_from_date,
+    MAX(signal_date) as update_to_date
+  FROM `kabu-376213.kabu2411.D10_trading_signals`
+  WHERE signal_date > last_signal_date
+)
 SELECT 
-  '✅ D010増分投入完了' as status,
-  target_quote_date as processed_date,
-  COUNT(*) as total_inserted,
-  COUNT(DISTINCT signal_date) as signal_date,
-  COUNT(DISTINCT signal_type) as signal_types,
-  COUNT(DISTINCT stock_code) as stocks,
-  CURRENT_TIMESTAMP() as end_time
-FROM `kabu-376213.kabu2411.D010_basic_results`
-WHERE created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 10 MINUTE);
+  '✅ D10_trading_signals 差分更新完了' as status,
+  new_records,
+  new_days,
+  update_from_date,
+  update_to_date,
+  CURRENT_TIMESTAMP() as completion_time
+FROM update_summary;
+
+-- 最新データサンプル確認
+SELECT 
+  '🔍 最新データサンプル' as check_type,
+  signal_date,
+  signal_type,
+  trade_type,
+  stock_name,
+  signal_value,
+  baseline_profit_rate,
+  is_win,
+  tradable_shares
+FROM `kabu-376213.kabu2411.D10_trading_signals`
+WHERE signal_date = (SELECT MAX(signal_date) FROM `kabu-376213.kabu2411.D10_trading_signals`)
+  AND stock_code IN ('7203', '8306', '9984')  -- トヨタ、三菱UFJ、ソフトバンクG
+ORDER BY stock_code, signal_type
+LIMIT 10;
+
+-- 実行完了メッセージ
+SELECT 
+  '🏆 差分更新処理完了！' as message,
+  '次回実行: 翌営業日の日次バッチ' as next_run,
+  CURRENT_TIMESTAMP() as timestamp;
