@@ -1,12 +1,17 @@
 -- ============================================================================
 -- ストアドプロシージャ: S10_optimize_single_metric
 -- 作成日: 2025-01-17
+-- 修正日: 2025-01-18
 -- 説明: 単一指標の逐次最適化（37ラウンド）
 --       D10_trading_signalsテーブルに対応し、パーセント計算を内部で実装
 --       期間指定可能、テーブル名をD81_/D82_プレフィックスに統一
+-- 修正内容:
+--   - DIRECTIONをUP_DIRECTION/DOWN_DIRECTIONに分離
+--   - 14指標はBUY/SELL統一で学習（trade_type条件を削除）
+--   - D81テーブルの構造変更に対応（trade_typeカラム削除想定）
 -- パラメータ:
---   - target_metric: 最適化対象の指標（H3P, H1P, L3P, L1P, CU3P, CU1P, CD3P, CD1P, UD75P, DD75P, UC3P, DC3P, DIRECTION, VOL3P, VOL5P）
---   - target_trade_type: 売買種別（BUY/SELL）
+--   - target_metric: 最適化対象の指標（H3P, H1P, L3P, L1P, CU3P, CU1P, CD3P, CD1P, UD75P, DD75P, UC3P, DC3P, UP_DIRECTION, DOWN_DIRECTION, VOL3P, VOL5P）
+--   - target_trade_type: 売買種別（BUY/SELL） ※現在は使用されない
 --   - start_date: 集計開始日（デフォルト: 2022-01-01）
 --   - end_date: 集計終了日（デフォルト: 2025-05-31）
 -- ============================================================================
@@ -28,14 +33,18 @@ BEGIN
   DECLARE input_trade_type STRING DEFAULT target_trade_type;
   DECLARE input_start_date DATE;
   DECLARE input_end_date DATE;
+  DECLARE is_directional_metric BOOL;
   
   -- パラメータのデフォルト値を設定
   SET input_start_date = IFNULL(start_date, DATE('2022-01-01'));
   SET input_end_date = IFNULL(end_date, DATE('2025-05-31'));
   
+  -- 方向性指標かどうかを判定
+  SET is_directional_metric = (target_metric IN ('UP_DIRECTION', 'DOWN_DIRECTION'));
+  
   -- 開始メッセージ
   SELECT 
-    CONCAT('🚀 ', target_metric, ' (', target_trade_type, ') の最適化開始') as message,
+    CONCAT('🚀 ', target_metric, ' (BUY/SELL統一) の最適化開始') as message,
     CONCAT('期間: ', input_start_date, ' ～ ', input_end_date) as period,
     CURRENT_TIMESTAMP() as start_time;
   
@@ -81,20 +90,16 @@ BEGIN
           WHEN target_metric = 'DC3P' AND 
             SAFE_DIVIDE(d.open_to_close_gap, d.day_open) * 100 <= -3.0 AND 
             SAFE_DIVIDE(d.open_to_high_gap, d.day_open) * 100 <= 0.5 THEN 1.0
-          -- 方向性の目的変数
-          WHEN target_metric = 'DIRECTION' THEN
-            CASE 
-              WHEN target_trade_type = 'BUY' AND SAFE_DIVIDE(d.open_to_close_gap, d.day_open) * 100 > 0 THEN 1.0
-              WHEN target_trade_type = 'SELL' AND SAFE_DIVIDE(d.open_to_close_gap, d.day_open) * 100 < 0 THEN 1.0
-              ELSE 0.0
-            END
+          -- 方向性の目的変数（分離版）
+          WHEN target_metric = 'UP_DIRECTION' AND SAFE_DIVIDE(d.open_to_close_gap, d.day_open) * 100 > 0 THEN 1.0
+          WHEN target_metric = 'DOWN_DIRECTION' AND SAFE_DIVIDE(d.open_to_close_gap, d.day_open) * 100 < 0 THEN 1.0
           -- ボラティリティの目的変数
           WHEN target_metric = 'VOL3P' AND ABS(SAFE_DIVIDE(d.open_to_close_gap, d.day_open) * 100) >= 3.0 THEN 1.0
           WHEN target_metric = 'VOL5P' AND ABS(SAFE_DIVIDE(d.open_to_close_gap, d.day_open) * 100) >= 5.0 THEN 1.0
           ELSE 0.0
         END as actual_touch,
         
-        -- 該当指標の係数
+        -- 該当指標の係数（D81の新構造に対応）
         CASE 
           -- 既存8指標係数
           WHEN target_metric = 'H3P' THEN c.coef_h3p
@@ -110,8 +115,9 @@ BEGIN
           WHEN target_metric = 'DD75P' THEN c.coef_dd75p
           WHEN target_metric = 'UC3P' THEN c.coef_uc3p
           WHEN target_metric = 'DC3P' THEN c.coef_dc3p
-          -- 方向性係数
-          WHEN target_metric = 'DIRECTION' THEN c.coef_direction
+          -- 方向性係数（新カラム）
+          WHEN target_metric = 'UP_DIRECTION' THEN c.coef_up_direction
+          WHEN target_metric = 'DOWN_DIRECTION' THEN c.coef_down_direction
           -- ボラティリティ係数
           WHEN target_metric = 'VOL3P' THEN c.coef_vol3p
           WHEN target_metric = 'VOL5P' THEN c.coef_vol5p
@@ -121,9 +127,9 @@ BEGIN
       JOIN `kabu-376213.kabu2411.D81_signal_coefficients_8indicators` c
         ON d.signal_type = c.signal_type 
         AND d.signal_bin = c.signal_bin
-        AND d.trade_type = c.trade_type
+        -- trade_typeのJOIN条件を削除（全指標でBUY/SELL統一）
       WHERE d.signal_date BETWEEN input_start_date AND input_end_date  -- 期間指定
-        AND d.trade_type = target_trade_type
+        -- trade_typeのWHERE条件も削除（全指標でBUY/SELL統一）
     )
     SELECT 
       sc.*,
@@ -169,7 +175,7 @@ BEGIN
       FROM `kabu-376213.kabu2411.D82_optimization_history` oh
       WHERE oh.optimized_signal_type = ctr.signal_type
         AND oh.target_metric = input_metric
-        AND oh.trade_type = input_trade_type
+        -- 方向性指標以外では無視される
     )
     GROUP BY signal_type
     HAVING COUNT(DISTINCT signal_bin) >= 15  -- 最低15bin以上のデータ
@@ -203,82 +209,89 @@ BEGIN
       WHERE ctr.signal_type = best_signal_type;
       
       -- ステップ5: 係数テーブルを更新（全指標対応）
+      -- 14指標（H3P等）の更新ではtrade_type条件を削除
       IF target_metric = 'H3P' THEN
         UPDATE `kabu-376213.kabu2411.D81_signal_coefficients_8indicators` c
         SET coef_h3p = nc.new_coefficient, updated_at = CURRENT_TIMESTAMP()
         FROM new_coefficients nc
-        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin AND c.trade_type = target_trade_type;
+        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin;
       ELSEIF target_metric = 'H1P' THEN
         UPDATE `kabu-376213.kabu2411.D81_signal_coefficients_8indicators` c
         SET coef_h1p = nc.new_coefficient, updated_at = CURRENT_TIMESTAMP()
         FROM new_coefficients nc
-        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin AND c.trade_type = target_trade_type;
+        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin;
       ELSEIF target_metric = 'L3P' THEN
         UPDATE `kabu-376213.kabu2411.D81_signal_coefficients_8indicators` c
         SET coef_l3p = nc.new_coefficient, updated_at = CURRENT_TIMESTAMP()
         FROM new_coefficients nc
-        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin AND c.trade_type = target_trade_type;
+        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin;
       ELSEIF target_metric = 'L1P' THEN
         UPDATE `kabu-376213.kabu2411.D81_signal_coefficients_8indicators` c
         SET coef_l1p = nc.new_coefficient, updated_at = CURRENT_TIMESTAMP()
         FROM new_coefficients nc
-        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin AND c.trade_type = target_trade_type;
+        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin;
       ELSEIF target_metric = 'CU3P' THEN
         UPDATE `kabu-376213.kabu2411.D81_signal_coefficients_8indicators` c
         SET coef_cu3p = nc.new_coefficient, updated_at = CURRENT_TIMESTAMP()
         FROM new_coefficients nc
-        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin AND c.trade_type = target_trade_type;
+        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin;
       ELSEIF target_metric = 'CU1P' THEN
         UPDATE `kabu-376213.kabu2411.D81_signal_coefficients_8indicators` c
         SET coef_cu1p = nc.new_coefficient, updated_at = CURRENT_TIMESTAMP()
         FROM new_coefficients nc
-        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin AND c.trade_type = target_trade_type;
+        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin;
       ELSEIF target_metric = 'CD3P' THEN
         UPDATE `kabu-376213.kabu2411.D81_signal_coefficients_8indicators` c
         SET coef_cd3p = nc.new_coefficient, updated_at = CURRENT_TIMESTAMP()
         FROM new_coefficients nc
-        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin AND c.trade_type = target_trade_type;
+        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin;
       ELSEIF target_metric = 'CD1P' THEN
         UPDATE `kabu-376213.kabu2411.D81_signal_coefficients_8indicators` c
         SET coef_cd1p = nc.new_coefficient, updated_at = CURRENT_TIMESTAMP()
         FROM new_coefficients nc
-        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin AND c.trade_type = target_trade_type;
+        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin;
       ELSEIF target_metric = 'UD75P' THEN
         UPDATE `kabu-376213.kabu2411.D81_signal_coefficients_8indicators` c
         SET coef_ud75p = nc.new_coefficient, updated_at = CURRENT_TIMESTAMP()
         FROM new_coefficients nc
-        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin AND c.trade_type = target_trade_type;
+        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin;
       ELSEIF target_metric = 'DD75P' THEN
         UPDATE `kabu-376213.kabu2411.D81_signal_coefficients_8indicators` c
         SET coef_dd75p = nc.new_coefficient, updated_at = CURRENT_TIMESTAMP()
         FROM new_coefficients nc
-        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin AND c.trade_type = target_trade_type;
+        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin;
       ELSEIF target_metric = 'UC3P' THEN
         UPDATE `kabu-376213.kabu2411.D81_signal_coefficients_8indicators` c
         SET coef_uc3p = nc.new_coefficient, updated_at = CURRENT_TIMESTAMP()
         FROM new_coefficients nc
-        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin AND c.trade_type = target_trade_type;
+        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin;
       ELSEIF target_metric = 'DC3P' THEN
         UPDATE `kabu-376213.kabu2411.D81_signal_coefficients_8indicators` c
         SET coef_dc3p = nc.new_coefficient, updated_at = CURRENT_TIMESTAMP()
         FROM new_coefficients nc
-        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin AND c.trade_type = target_trade_type;
-      ELSEIF target_metric = 'DIRECTION' THEN
+        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin;
+      -- 方向性係数の更新（trade_type条件なし）
+      ELSEIF target_metric = 'UP_DIRECTION' THEN
         UPDATE `kabu-376213.kabu2411.D81_signal_coefficients_8indicators` c
-        SET coef_direction = nc.new_coefficient, updated_at = CURRENT_TIMESTAMP()
+        SET coef_up_direction = nc.new_coefficient, updated_at = CURRENT_TIMESTAMP()
         FROM new_coefficients nc
-        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin AND c.trade_type = target_trade_type;
-      -- ボラティリティ係数の更新
+        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin;
+      ELSEIF target_metric = 'DOWN_DIRECTION' THEN
+        UPDATE `kabu-376213.kabu2411.D81_signal_coefficients_8indicators` c
+        SET coef_down_direction = nc.new_coefficient, updated_at = CURRENT_TIMESTAMP()
+        FROM new_coefficients nc
+        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin;
+      -- ボラティリティ係数の更新（trade_type条件なし）
       ELSEIF target_metric = 'VOL3P' THEN
         UPDATE `kabu-376213.kabu2411.D81_signal_coefficients_8indicators` c
         SET coef_vol3p = nc.new_coefficient, updated_at = CURRENT_TIMESTAMP()
         FROM new_coefficients nc
-        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin AND c.trade_type = target_trade_type;
+        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin;
       ELSEIF target_metric = 'VOL5P' THEN
         UPDATE `kabu-376213.kabu2411.D81_signal_coefficients_8indicators` c
         SET coef_vol5p = nc.new_coefficient, updated_at = CURRENT_TIMESTAMP()
         FROM new_coefficients nc
-        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin AND c.trade_type = target_trade_type;
+        WHERE c.signal_type = nc.signal_type AND c.signal_bin = nc.signal_bin;
       END IF;
       
       -- ステップ6: 処理履歴に記録
@@ -290,7 +303,7 @@ BEGIN
       SELECT 
         optimization_round,
         target_metric,
-        target_trade_type,
+        'UNIFIED',  -- 全指標で統一学習のため常に'UNIFIED'
         best_signal_type,
         best_cv,
         COUNT(DISTINCT signal_bin),
@@ -324,10 +337,10 @@ BEGIN
       ROUND(SUM(processing_time_seconds), 1) as total_processing_seconds
     FROM `kabu-376213.kabu2411.D82_optimization_history` oh
     WHERE oh.target_metric = input_metric
-      AND oh.trade_type = input_trade_type
+      AND oh.trade_type = 'UNIFIED'  -- 統一学習のみ
   )
   SELECT 
-    CONCAT('🎉 ', input_metric, ' (', input_trade_type, ') 最適化完了') as status,
+    CONCAT('🎉 ', input_metric, ' (BUY/SELL統一) 最適化完了') as status,
     total_optimized_indicators,
     avg_cv_score,
     total_processing_seconds,

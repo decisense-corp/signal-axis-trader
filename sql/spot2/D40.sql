@@ -1,12 +1,11 @@
 /*
-ファイル: create_D40_tomorrow_scores.sql
-説明: D40_tomorrow_scores テーブル作成と日次データ投入
-作成日: 2025年1月17日
-目的: 明日の取引スコアと全期間統計情報を統合（D20のスコア版）
-特徴:
-  - D20_tomorrow_signalsからデータ取得してスコア計算
-  - D30_trading_scoresから全期間統計を集計
-  - 流動性情報を含む
+ファイル: create_D40_tomorrow_scores_16indicators.sql
+説明: D40_tomorrow_scores 16指標対応版
+作成日: 2025年1月18日
+修正内容:
+  - score_typeを16種類に統一（UP_DIRECTION/DOWN_DIRECTION分離）
+  - D81の新構造（BUY/SELL統一）に対応
+  - D30の新構造（16指標）から統計取得
 実行時間: 約5-10分
 */
 
@@ -16,21 +15,21 @@
 
 -- 処理開始メッセージ
 SELECT 
-  '🚀 D40_tomorrow_scores テーブル作成開始' as message,
+  '🚀 D40_tomorrow_scores 16指標版作成開始' as message,
   '特徴: スコアベース明日予測 + 全期間統計' as features,
-  'データソース: D20_tomorrow_signals + D30_trading_scores' as data_source,
+  'データソース: D20_tomorrow_signals + D30_trading_scores（16指標版）' as data_source,
   CURRENT_TIMESTAMP() as start_time;
 
 -- 既存テーブル削除（存在する場合）
 DROP TABLE IF EXISTS `kabu-376213.kabu2411.D40_tomorrow_scores`;
 
--- 新テーブル作成（D20と同じ構造）
+-- 新テーブル作成
 CREATE TABLE `kabu-376213.kabu2411.D40_tomorrow_scores` (
   -- 基本情報
   target_date DATE NOT NULL,             -- 取引予定日（明日）
-  score_type STRING NOT NULL,            -- スコア種別（28種類）
+  score_type STRING NOT NULL,            -- スコア種別（16種類）
   score_bin INT64 NOT NULL,              -- スコア分位（1-20）
-  trade_type STRING NOT NULL,            -- 取引種別（'BUY'/'SELL'）
+  trade_type STRING NOT NULL,            -- 戦略種別（'BUY'/'SELL'）
   stock_code STRING NOT NULL,            -- 銘柄コード
   stock_name STRING,                     -- 銘柄名
   score_value FLOAT64,                   -- スコア値
@@ -54,7 +53,7 @@ CREATE TABLE `kabu-376213.kabu2411.D40_tomorrow_scores` (
   last_signal_date DATE,                 -- 最終シグナル日
   
   -- システム項目
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+  created_at TIMESTAMP
 )
 PARTITION BY target_date
 CLUSTER BY stock_code, trade_type;
@@ -79,7 +78,7 @@ latest_target AS (
   FROM `kabu-376213.kabu2411.D20_tomorrow_signals`
 ),
 
--- 2. D20の最新日データからスコア計算
+-- 2. D20の最新日データからスコア計算（新D81構造対応）
 score_calculation AS (
   SELECT 
     lt.target_date,
@@ -87,7 +86,6 @@ score_calculation AS (
     d.stock_name,
     d.signal_type,
     d.signal_bin,
-    d.trade_type,
     
     -- 流動性情報
     d.prev_close,
@@ -95,28 +93,28 @@ score_calculation AS (
     d.prev_trading_value,
     d.tradable_shares,
     
-    -- 各指標の係数を取得
+    -- 各指標の係数を取得（D81の新構造：trade_typeなし）
     c.coef_h3p, c.coef_h1p, c.coef_l3p, c.coef_l1p,
     c.coef_cu3p, c.coef_cu1p, c.coef_cd3p, c.coef_cd1p,
     c.coef_ud75p, c.coef_dd75p, c.coef_uc3p, c.coef_dc3p,
-    c.coef_direction, c.coef_vol3p, c.coef_vol5p
+    c.coef_up_direction, c.coef_down_direction,  -- 新カラム
+    c.coef_vol3p, c.coef_vol5p
     
   FROM `kabu-376213.kabu2411.D20_tomorrow_signals` d
   JOIN `kabu-376213.kabu2411.D81_signal_coefficients_8indicators` c
     ON d.signal_type = c.signal_type 
     AND d.signal_bin = c.signal_bin
-    AND d.trade_type = c.trade_type
+    -- trade_typeのJOIN条件を削除（D81の新構造）
   CROSS JOIN latest_target lt
   WHERE d.target_date = lt.target_date
 ),
 
--- 3. 各スコアタイプの対数和を計算
+-- 3. 各スコアタイプの対数和を計算（BUY/SELL統一）
 log_scores AS (
   SELECT 
     target_date,
     stock_code,
     ANY_VALUE(stock_name) as stock_name,
-    trade_type,
     ANY_VALUE(prev_close) as prev_close,
     ANY_VALUE(prev_volume) as prev_volume,
     ANY_VALUE(prev_trading_value) as prev_trading_value,
@@ -135,106 +133,89 @@ log_scores AS (
     SUM(LN(GREATEST(coef_dd75p, 0.01))) as log_score_dd75p,
     SUM(LN(GREATEST(coef_uc3p, 0.01))) as log_score_uc3p,
     SUM(LN(GREATEST(coef_dc3p, 0.01))) as log_score_dc3p,
-    SUM(LN(GREATEST(coef_direction, 0.01))) as log_score_direction,
+    SUM(LN(GREATEST(coef_up_direction, 0.01))) as log_score_up_direction,      -- 新
+    SUM(LN(GREATEST(coef_down_direction, 0.01))) as log_score_down_direction,  -- 新
     SUM(LN(GREATEST(coef_vol3p, 0.01))) as log_score_vol3p,
     SUM(LN(GREATEST(coef_vol5p, 0.01))) as log_score_vol5p
   FROM score_calculation
-  GROUP BY target_date, stock_code, trade_type
+  GROUP BY target_date, stock_code  -- trade_type削除（BUY/SELL統一）
 ),
 
--- 4. UNPIVOT形式に変換
+-- 4. UNPIVOT形式に変換（16種類）
 unpivoted_scores AS (
-  -- BUY側スコア
-  SELECT target_date, stock_code, stock_name, 'H3P_BUY' as score_type, log_score_h3p as score_value, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'BUY'
+  -- 既存8指標
+  SELECT target_date, stock_code, stock_name, 'H3P' as score_type, log_score_h3p as score_value, 
+         prev_close, prev_volume, prev_trading_value, tradable_shares 
+  FROM log_scores
   UNION ALL
-  SELECT target_date, stock_code, stock_name, 'H1P_BUY', log_score_h1p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'BUY'
+  SELECT target_date, stock_code, stock_name, 'H1P', log_score_h1p, 
+         prev_close, prev_volume, prev_trading_value, tradable_shares 
+  FROM log_scores
   UNION ALL
-  SELECT target_date, stock_code, stock_name, 'L3P_BUY', log_score_l3p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'BUY'
+  SELECT target_date, stock_code, stock_name, 'L3P', log_score_l3p, 
+         prev_close, prev_volume, prev_trading_value, tradable_shares 
+  FROM log_scores
   UNION ALL
-  SELECT target_date, stock_code, stock_name, 'L1P_BUY', log_score_l1p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'BUY'
+  SELECT target_date, stock_code, stock_name, 'L1P', log_score_l1p, 
+         prev_close, prev_volume, prev_trading_value, tradable_shares 
+  FROM log_scores
   UNION ALL
-  SELECT target_date, stock_code, stock_name, 'CU3P_BUY', log_score_cu3p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'BUY'
+  SELECT target_date, stock_code, stock_name, 'CU3P', log_score_cu3p, 
+         prev_close, prev_volume, prev_trading_value, tradable_shares 
+  FROM log_scores
   UNION ALL
-  SELECT target_date, stock_code, stock_name, 'CU1P_BUY', log_score_cu1p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'BUY'
+  SELECT target_date, stock_code, stock_name, 'CU1P', log_score_cu1p, 
+         prev_close, prev_volume, prev_trading_value, tradable_shares 
+  FROM log_scores
   UNION ALL
-  SELECT target_date, stock_code, stock_name, 'CD3P_BUY', log_score_cd3p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'BUY'
+  SELECT target_date, stock_code, stock_name, 'CD3P', log_score_cd3p, 
+         prev_close, prev_volume, prev_trading_value, tradable_shares 
+  FROM log_scores
   UNION ALL
-  SELECT target_date, stock_code, stock_name, 'CD1P_BUY', log_score_cd1p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'BUY'
-  UNION ALL
-  SELECT target_date, stock_code, stock_name, 'UD75P_BUY', log_score_ud75p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'BUY'
-  UNION ALL
-  SELECT target_date, stock_code, stock_name, 'DD75P_BUY', log_score_dd75p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'BUY'
-  UNION ALL
-  SELECT target_date, stock_code, stock_name, 'UC3P_BUY', log_score_uc3p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'BUY'
-  UNION ALL
-  SELECT target_date, stock_code, stock_name, 'DC3P_BUY', log_score_dc3p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'BUY'
-  UNION ALL
-  SELECT target_date, stock_code, stock_name, 'DIRECTION_BUY', log_score_direction, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'BUY'
+  SELECT target_date, stock_code, stock_name, 'CD1P', log_score_cd1p, 
+         prev_close, prev_volume, prev_trading_value, tradable_shares 
+  FROM log_scores
   
-  -- SELL側スコア
+  -- 新4指標
   UNION ALL
-  SELECT target_date, stock_code, stock_name, 'H3P_SELL', log_score_h3p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'SELL'
+  SELECT target_date, stock_code, stock_name, 'UD75P', log_score_ud75p, 
+         prev_close, prev_volume, prev_trading_value, tradable_shares 
+  FROM log_scores
   UNION ALL
-  SELECT target_date, stock_code, stock_name, 'H1P_SELL', log_score_h1p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'SELL'
+  SELECT target_date, stock_code, stock_name, 'DD75P', log_score_dd75p, 
+         prev_close, prev_volume, prev_trading_value, tradable_shares 
+  FROM log_scores
   UNION ALL
-  SELECT target_date, stock_code, stock_name, 'L3P_SELL', log_score_l3p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'SELL'
+  SELECT target_date, stock_code, stock_name, 'UC3P', log_score_uc3p, 
+         prev_close, prev_volume, prev_trading_value, tradable_shares 
+  FROM log_scores
   UNION ALL
-  SELECT target_date, stock_code, stock_name, 'L1P_SELL', log_score_l1p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'SELL'
-  UNION ALL
-  SELECT target_date, stock_code, stock_name, 'CU3P_SELL', log_score_cu3p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'SELL'
-  UNION ALL
-  SELECT target_date, stock_code, stock_name, 'CU1P_SELL', log_score_cu1p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'SELL'
-  UNION ALL
-  SELECT target_date, stock_code, stock_name, 'CD3P_SELL', log_score_cd3p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'SELL'
-  UNION ALL
-  SELECT target_date, stock_code, stock_name, 'CD1P_SELL', log_score_cd1p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'SELL'
-  UNION ALL
-  SELECT target_date, stock_code, stock_name, 'UD75P_SELL', log_score_ud75p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'SELL'
-  UNION ALL
-  SELECT target_date, stock_code, stock_name, 'DD75P_SELL', log_score_dd75p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'SELL'
-  UNION ALL
-  SELECT target_date, stock_code, stock_name, 'UC3P_SELL', log_score_uc3p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'SELL'
-  UNION ALL
-  SELECT target_date, stock_code, stock_name, 'DC3P_SELL', log_score_dc3p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'SELL'
-  UNION ALL
-  SELECT target_date, stock_code, stock_name, 'DIRECTION_SELL', log_score_direction, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'SELL'
+  SELECT target_date, stock_code, stock_name, 'DC3P', log_score_dc3p, 
+         prev_close, prev_volume, prev_trading_value, tradable_shares 
+  FROM log_scores
   
-  -- ボラティリティ（BUY/SELL共通）
+  -- 方向性（分離版）
   UNION ALL
-  SELECT target_date, stock_code, stock_name, 'VOL3P', log_score_vol3p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'BUY'
+  SELECT target_date, stock_code, stock_name, 'UP_DIRECTION', log_score_up_direction, 
+         prev_close, prev_volume, prev_trading_value, tradable_shares 
+  FROM log_scores
   UNION ALL
-  SELECT target_date, stock_code, stock_name, 'VOL5P', log_score_vol5p, prev_close, prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores WHERE trade_type = 'BUY'
+  SELECT target_date, stock_code, stock_name, 'DOWN_DIRECTION', log_score_down_direction, 
+         prev_close, prev_volume, prev_trading_value, tradable_shares 
+  FROM log_scores
+  
+  -- ボラティリティ
+  UNION ALL
+  SELECT target_date, stock_code, stock_name, 'VOL3P', log_score_vol3p, 
+         prev_close, prev_volume, prev_trading_value, tradable_shares 
+  FROM log_scores
+  UNION ALL
+  SELECT target_date, stock_code, stock_name, 'VOL5P', log_score_vol5p, 
+         prev_close, prev_volume, prev_trading_value, tradable_shares 
+  FROM log_scores
 ),
 
--- 5. スコアbinを計算
+-- 5. スコアbinを計算（16指標版のM20使用）
 scores_with_bins AS (
   SELECT 
     s.*,
@@ -250,7 +231,7 @@ scores_with_bins AS (
   FROM unpivoted_scores s
 ),
 
--- 6. D30から全期間統計を取得
+-- 6. D30から全期間統計を取得（16指標版）
 all_time_statistics AS (
   SELECT 
     score_type,
@@ -272,71 +253,43 @@ all_time_statistics AS (
     MAX(signal_date) as last_signal_date
   FROM `kabu-376213.kabu2411.D30_trading_scores`
   GROUP BY score_type, score_bin, trade_type, stock_code
-),
-
--- 7. 最終結果の結合
-final_results AS (
-  SELECT 
-    swb.target_date,
-    swb.score_type,
-    swb.score_bin,
-    tt as trade_type,  -- UNNESTの値を使用
-    swb.stock_code,
-    swb.stock_name,
-    swb.score_value,
-    swb.prev_close,
-    swb.prev_volume,
-    swb.prev_trading_value,
-    swb.tradable_shares,
-    
-    COALESCE(ats.total_samples, 0) as total_samples,
-    COALESCE(ats.win_samples, 0) as win_samples,
-    COALESCE(ats.win_rate, 0.0) as win_rate,
-    COALESCE(ats.avg_profit_rate, 0.0) as avg_profit_rate,
-    COALESCE(ats.std_deviation, 0.0) as std_deviation,
-    COALESCE(ats.sharpe_ratio, 0.0) as sharpe_ratio,
-    COALESCE(ats.max_profit_rate, 0.0) as max_profit_rate,
-    COALESCE(ats.min_profit_rate, 0.0) as min_profit_rate,
-    ats.first_signal_date,
-    ats.last_signal_date,
-    
-    CURRENT_TIMESTAMP() as created_at
-    
-  FROM scores_with_bins swb
-  CROSS JOIN UNNEST(['BUY', 'SELL']) as tt  -- エイリアスのみ
-  LEFT JOIN all_time_statistics ats
-    ON swb.score_type = ats.score_type
-    AND swb.score_bin = ats.score_bin
-    AND tt = ats.trade_type  -- 修正：ttを直接使用
-    AND swb.stock_code = ats.stock_code
-  WHERE swb.score_bin IS NOT NULL
 )
 
--- 最終SELECT
+-- 7. 最終結果（各スコアに対してBUY/SELL戦略を適用）
 SELECT 
-  target_date,
-  score_type,
-  score_bin,
-  trade_type,
-  stock_code,
-  stock_name,
-  score_value,
-  prev_close,
-  prev_volume,
-  prev_trading_value,
-  tradable_shares,
-  total_samples,
-  win_samples,
-  win_rate,
-  avg_profit_rate,
-  std_deviation,
-  sharpe_ratio,
-  max_profit_rate,
-  min_profit_rate,
-  first_signal_date,
-  last_signal_date,
-  created_at
-FROM final_results
+  swb.target_date,
+  swb.score_type,
+  swb.score_bin,
+  strategy_type as trade_type,  -- 戦略としてのBUY/SELL
+  swb.stock_code,
+  swb.stock_name,
+  swb.score_value,
+  swb.prev_close,
+  swb.prev_volume,
+  swb.prev_trading_value,
+  swb.tradable_shares,
+  
+  COALESCE(ats.total_samples, 0) as total_samples,
+  COALESCE(ats.win_samples, 0) as win_samples,
+  COALESCE(ats.win_rate, 0.0) as win_rate,
+  COALESCE(ats.avg_profit_rate, 0.0) as avg_profit_rate,
+  COALESCE(ats.std_deviation, 0.0) as std_deviation,
+  COALESCE(ats.sharpe_ratio, 0.0) as sharpe_ratio,
+  COALESCE(ats.max_profit_rate, 0.0) as max_profit_rate,
+  COALESCE(ats.min_profit_rate, 0.0) as min_profit_rate,
+  ats.first_signal_date,
+  ats.last_signal_date,
+  
+  CURRENT_TIMESTAMP() as created_at
+  
+FROM scores_with_bins swb
+CROSS JOIN UNNEST(['BUY', 'SELL']) as strategy_type  -- 各スコアに対してBUY/SELL戦略を適用
+LEFT JOIN all_time_statistics ats
+  ON swb.score_type = ats.score_type
+  AND swb.score_bin = ats.score_bin
+  AND strategy_type = ats.trade_type
+  AND swb.stock_code = ats.stock_code
+WHERE swb.score_bin IS NOT NULL
 ORDER BY 
   avg_profit_rate DESC,
   win_rate DESC,
@@ -350,9 +303,9 @@ ORDER BY
 
 -- 投入完了確認
 SELECT 
-  '✅ D40_tomorrow_scores データ投入完了' as status,
+  '✅ D40_tomorrow_scores 16指標版投入完了' as status,
   COUNT(*) as total_records,
-  COUNT(DISTINCT score_type) as score_types_count,
+  COUNT(DISTINCT score_type) as score_types_should_be_16,
   COUNT(DISTINCT stock_code) as stocks_count,
   MIN(target_date) as target_date,
   CURRENT_TIMESTAMP() as end_time
@@ -368,8 +321,43 @@ SELECT
   AVG(total_samples) as avg_samples
 FROM `kabu-376213.kabu2411.D40_tomorrow_scores`
 GROUP BY score_type
-ORDER BY score_type
-LIMIT 10;
+ORDER BY score_type;
+
+-- 方向性指標の分離確認
+SELECT 
+  '🔍 方向性指標の分離確認' as check_type,
+  score_type,
+  trade_type,
+  COUNT(*) as record_count,
+  COUNT(DISTINCT stock_code) as stock_count,
+  ROUND(AVG(score_value), 4) as avg_score
+FROM `kabu-376213.kabu2411.D40_tomorrow_scores`
+WHERE score_type IN ('UP_DIRECTION', 'DOWN_DIRECTION')
+GROUP BY score_type, trade_type
+ORDER BY score_type, trade_type;
+
+-- 16指標の実装確認
+WITH expected_scores AS (
+  SELECT score FROM UNNEST([
+    'H3P', 'H1P', 'L3P', 'L1P',
+    'CU3P', 'CU1P', 'CD3P', 'CD1P',
+    'UD75P', 'DD75P', 'UC3P', 'DC3P',
+    'UP_DIRECTION', 'DOWN_DIRECTION',
+    'VOL3P', 'VOL5P'
+  ]) as score
+)
+SELECT 
+  '🎯 16指標の実装状況' as check_type,
+  es.score as expected_score,
+  CASE WHEN COUNT(d.score_type) > 0 THEN '✅' ELSE '❌' END as status,
+  COUNT(d.score_type) as records_found
+FROM expected_scores es
+LEFT JOIN (
+  SELECT DISTINCT score_type 
+  FROM `kabu-376213.kabu2411.D40_tomorrow_scores`
+) d ON es.score = d.score_type
+GROUP BY es.score
+ORDER BY es.score;
 
 -- 高パフォーマンススコア確認
 SELECT 
@@ -384,8 +372,8 @@ SELECT
   ROUND(avg_profit_rate, 2) as avg_profit_pct,
   tradable_shares
 FROM `kabu-376213.kabu2411.D40_tomorrow_scores`
-WHERE total_samples >= 20  -- 十分なサンプル数
-  AND win_rate >= 55       -- 高勝率
+WHERE total_samples >= 20     -- 十分なサンプル数
+  AND win_rate >= 55          -- 高勝率
   AND avg_profit_rate >= 0.5  -- 高期待値
 ORDER BY avg_profit_rate DESC
 LIMIT 10;

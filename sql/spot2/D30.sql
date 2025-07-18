@@ -1,11 +1,11 @@
 /*
-ファイル: create_D30_trading_scores_fixed.sql
-説明: D30_trading_scores 修正版（15指標×BUY/SELL）
-作成日: 2025年1月17日
+ファイル: create_D30_trading_scores_16indicators.sql
+説明: D30_trading_scores 16指標対応版
+作成日: 2025年1月18日
 修正内容:
-  - score_typeを15種類に統一（H3P, L3P等）
+  - score_typeを16種類に拡張（UP_DIRECTION/DOWN_DIRECTION分離）
+  - D81の新構造（BUY/SELL統一、trade_typeなし）に対応
   - 各スコアに対してBUY/SELL両方の戦略を適用
-  - 元のtrade_typeとは独立して処理
 実行時間: 約15-20分予想
 */
 
@@ -15,8 +15,8 @@
 
 -- 処理開始メッセージ
 SELECT 
-  '🚀 D30_trading_scores 修正版投入開始' as message,
-  'スコアベース取引シグナル（15種類×BUY/SELL）' as feature,
+  '🚀 D30_trading_scores 16指標版投入開始' as message,
+  'スコアベース取引シグナル（16種類×BUY/SELL）' as feature,
   '対象期間: 2022-07-01 〜 最新（全期間）' as target_period,
   CURRENT_TIMESTAMP() as start_time;
 
@@ -24,13 +24,13 @@ SELECT
 DELETE FROM `kabu-376213.kabu2411.D30_trading_scores` WHERE TRUE;
 
 -- ============================================================================
--- Part 2: 全期間データ投入（15指標版）
+-- Part 2: 全期間データ投入（16指標版）
 -- ============================================================================
 
 -- データ投入
 INSERT INTO `kabu-376213.kabu2411.D30_trading_scores`
 WITH 
--- 1. D10とD81から全期間のスコアを計算
+-- 1. D10とD81から全期間のスコアを計算（新D81構造対応）
 score_calculation AS (
   SELECT 
     d.signal_date,
@@ -58,29 +58,29 @@ score_calculation AS (
     d.prev_trading_value,
     d.tradable_shares,
     
-    -- 各指標の係数を取得
+    -- 各指標の係数を取得（D81の新構造：trade_typeなし）
     c.coef_h3p, c.coef_h1p, c.coef_l3p, c.coef_l1p,
     c.coef_cu3p, c.coef_cu1p, c.coef_cd3p, c.coef_cd1p,
     c.coef_ud75p, c.coef_dd75p, c.coef_uc3p, c.coef_dc3p,
-    c.coef_direction, c.coef_vol3p, c.coef_vol5p
+    c.coef_up_direction, c.coef_down_direction,  -- 新カラム
+    c.coef_vol3p, c.coef_vol5p
     
   FROM `kabu-376213.kabu2411.D10_trading_signals` d
   JOIN `kabu-376213.kabu2411.D81_signal_coefficients_8indicators` c
     ON d.signal_type = c.signal_type 
     AND d.signal_bin = c.signal_bin
-    AND d.trade_type = c.trade_type
+    -- trade_typeのJOIN条件を削除（D81の新構造）
   WHERE d.signal_date >= '2022-07-01'  -- 全期間
 ),
 
--- 2. 各スコアタイプの対数和を計算（BUY/SELL別々に保持）
+-- 2. 各スコアタイプの対数和を計算
 log_scores AS (
   SELECT 
     signal_date,
     stock_code,
     ANY_VALUE(stock_name) as stock_name,
-    original_trade_type,
     
-    -- 価格データ
+    -- 価格データ（最初の値を保持）
     ANY_VALUE(prev_close) as prev_close,
     ANY_VALUE(day_open) as day_open,
     ANY_VALUE(day_high) as day_high,
@@ -91,8 +91,6 @@ log_scores AS (
     ANY_VALUE(open_to_low_gap) as open_to_low_gap,
     ANY_VALUE(open_to_close_gap) as open_to_close_gap,
     ANY_VALUE(daily_range) as daily_range,
-    ANY_VALUE(baseline_profit_rate) as baseline_profit_rate,
-    ANY_VALUE(is_win) as is_win,
     ANY_VALUE(trading_volume) as trading_volume,
     ANY_VALUE(prev_volume) as prev_volume,
     ANY_VALUE(prev_trading_value) as prev_trading_value,
@@ -111,109 +109,116 @@ log_scores AS (
     SUM(LN(GREATEST(coef_dd75p, 0.01))) as log_score_dd75p,
     SUM(LN(GREATEST(coef_uc3p, 0.01))) as log_score_uc3p,
     SUM(LN(GREATEST(coef_dc3p, 0.01))) as log_score_dc3p,
-    SUM(LN(GREATEST(coef_direction, 0.01))) as log_score_direction,
+    SUM(LN(GREATEST(coef_up_direction, 0.01))) as log_score_up_direction,      -- 新
+    SUM(LN(GREATEST(coef_down_direction, 0.01))) as log_score_down_direction,  -- 新
     SUM(LN(GREATEST(coef_vol3p, 0.01))) as log_score_vol3p,
     SUM(LN(GREATEST(coef_vol5p, 0.01))) as log_score_vol5p
   FROM score_calculation
-  GROUP BY signal_date, stock_code, original_trade_type
+  GROUP BY signal_date, stock_code  -- original_trade_typeを削除（BUY/SELL統一）
 ),
 
--- 3. UNPIVOT形式に変換（15種類のスコアタイプ）
+-- 3. UNPIVOT形式に変換（16種類のスコアタイプ）
 unpivoted_scores AS (
   -- 既存8指標
-  SELECT signal_date, stock_code, stock_name, original_trade_type, 'H3P' as score_type, log_score_h3p as score_value, 
+  SELECT signal_date, stock_code, stock_name, 'H3P' as score_type, log_score_h3p as score_value, 
          prev_close, day_open, day_high, day_low, day_close, prev_close_to_open_gap, open_to_high_gap, 
-         open_to_low_gap, open_to_close_gap, daily_range, baseline_profit_rate, is_win, trading_volume, 
+         open_to_low_gap, open_to_close_gap, daily_range, trading_volume, 
          prev_volume, prev_trading_value, tradable_shares 
   FROM log_scores
   UNION ALL
-  SELECT signal_date, stock_code, stock_name, original_trade_type, 'H1P', log_score_h1p,
+  SELECT signal_date, stock_code, stock_name, 'H1P', log_score_h1p,
          prev_close, day_open, day_high, day_low, day_close, prev_close_to_open_gap, open_to_high_gap, 
-         open_to_low_gap, open_to_close_gap, daily_range, baseline_profit_rate, is_win, trading_volume, 
+         open_to_low_gap, open_to_close_gap, daily_range, trading_volume, 
          prev_volume, prev_trading_value, tradable_shares 
   FROM log_scores
   UNION ALL
-  SELECT signal_date, stock_code, stock_name, original_trade_type, 'L3P', log_score_l3p,
+  SELECT signal_date, stock_code, stock_name, 'L3P', log_score_l3p,
          prev_close, day_open, day_high, day_low, day_close, prev_close_to_open_gap, open_to_high_gap, 
-         open_to_low_gap, open_to_close_gap, daily_range, baseline_profit_rate, is_win, trading_volume, 
+         open_to_low_gap, open_to_close_gap, daily_range, trading_volume, 
          prev_volume, prev_trading_value, tradable_shares 
   FROM log_scores
   UNION ALL
-  SELECT signal_date, stock_code, stock_name, original_trade_type, 'L1P', log_score_l1p,
+  SELECT signal_date, stock_code, stock_name, 'L1P', log_score_l1p,
          prev_close, day_open, day_high, day_low, day_close, prev_close_to_open_gap, open_to_high_gap, 
-         open_to_low_gap, open_to_close_gap, daily_range, baseline_profit_rate, is_win, trading_volume, 
+         open_to_low_gap, open_to_close_gap, daily_range, trading_volume, 
          prev_volume, prev_trading_value, tradable_shares 
   FROM log_scores
   UNION ALL
-  SELECT signal_date, stock_code, stock_name, original_trade_type, 'CU3P', log_score_cu3p,
+  SELECT signal_date, stock_code, stock_name, 'CU3P', log_score_cu3p,
          prev_close, day_open, day_high, day_low, day_close, prev_close_to_open_gap, open_to_high_gap, 
-         open_to_low_gap, open_to_close_gap, daily_range, baseline_profit_rate, is_win, trading_volume, 
+         open_to_low_gap, open_to_close_gap, daily_range, trading_volume, 
          prev_volume, prev_trading_value, tradable_shares 
   FROM log_scores
   UNION ALL
-  SELECT signal_date, stock_code, stock_name, original_trade_type, 'CU1P', log_score_cu1p,
+  SELECT signal_date, stock_code, stock_name, 'CU1P', log_score_cu1p,
          prev_close, day_open, day_high, day_low, day_close, prev_close_to_open_gap, open_to_high_gap, 
-         open_to_low_gap, open_to_close_gap, daily_range, baseline_profit_rate, is_win, trading_volume, 
+         open_to_low_gap, open_to_close_gap, daily_range, trading_volume, 
          prev_volume, prev_trading_value, tradable_shares 
   FROM log_scores
   UNION ALL
-  SELECT signal_date, stock_code, stock_name, original_trade_type, 'CD3P', log_score_cd3p,
+  SELECT signal_date, stock_code, stock_name, 'CD3P', log_score_cd3p,
          prev_close, day_open, day_high, day_low, day_close, prev_close_to_open_gap, open_to_high_gap, 
-         open_to_low_gap, open_to_close_gap, daily_range, baseline_profit_rate, is_win, trading_volume, 
+         open_to_low_gap, open_to_close_gap, daily_range, trading_volume, 
          prev_volume, prev_trading_value, tradable_shares 
   FROM log_scores
   UNION ALL
-  SELECT signal_date, stock_code, stock_name, original_trade_type, 'CD1P', log_score_cd1p,
+  SELECT signal_date, stock_code, stock_name, 'CD1P', log_score_cd1p,
          prev_close, day_open, day_high, day_low, day_close, prev_close_to_open_gap, open_to_high_gap, 
-         open_to_low_gap, open_to_close_gap, daily_range, baseline_profit_rate, is_win, trading_volume, 
+         open_to_low_gap, open_to_close_gap, daily_range, trading_volume, 
          prev_volume, prev_trading_value, tradable_shares 
   FROM log_scores
   
   -- 新4指標
   UNION ALL
-  SELECT signal_date, stock_code, stock_name, original_trade_type, 'UD75P', log_score_ud75p,
+  SELECT signal_date, stock_code, stock_name, 'UD75P', log_score_ud75p,
          prev_close, day_open, day_high, day_low, day_close, prev_close_to_open_gap, open_to_high_gap, 
-         open_to_low_gap, open_to_close_gap, daily_range, baseline_profit_rate, is_win, trading_volume, 
+         open_to_low_gap, open_to_close_gap, daily_range, trading_volume, 
          prev_volume, prev_trading_value, tradable_shares 
   FROM log_scores
   UNION ALL
-  SELECT signal_date, stock_code, stock_name, original_trade_type, 'DD75P', log_score_dd75p,
+  SELECT signal_date, stock_code, stock_name, 'DD75P', log_score_dd75p,
          prev_close, day_open, day_high, day_low, day_close, prev_close_to_open_gap, open_to_high_gap, 
-         open_to_low_gap, open_to_close_gap, daily_range, baseline_profit_rate, is_win, trading_volume, 
+         open_to_low_gap, open_to_close_gap, daily_range, trading_volume, 
          prev_volume, prev_trading_value, tradable_shares 
   FROM log_scores
   UNION ALL
-  SELECT signal_date, stock_code, stock_name, original_trade_type, 'UC3P', log_score_uc3p,
+  SELECT signal_date, stock_code, stock_name, 'UC3P', log_score_uc3p,
          prev_close, day_open, day_high, day_low, day_close, prev_close_to_open_gap, open_to_high_gap, 
-         open_to_low_gap, open_to_close_gap, daily_range, baseline_profit_rate, is_win, trading_volume, 
+         open_to_low_gap, open_to_close_gap, daily_range, trading_volume, 
          prev_volume, prev_trading_value, tradable_shares 
   FROM log_scores
   UNION ALL
-  SELECT signal_date, stock_code, stock_name, original_trade_type, 'DC3P', log_score_dc3p,
+  SELECT signal_date, stock_code, stock_name, 'DC3P', log_score_dc3p,
          prev_close, day_open, day_high, day_low, day_close, prev_close_to_open_gap, open_to_high_gap, 
-         open_to_low_gap, open_to_close_gap, daily_range, baseline_profit_rate, is_win, trading_volume, 
-         prev_volume, prev_trading_value, tradable_shares 
-  FROM log_scores
-  
-  -- 方向性
-  UNION ALL
-  SELECT signal_date, stock_code, stock_name, original_trade_type, 'DIRECTION', log_score_direction,
-         prev_close, day_open, day_high, day_low, day_close, prev_close_to_open_gap, open_to_high_gap, 
-         open_to_low_gap, open_to_close_gap, daily_range, baseline_profit_rate, is_win, trading_volume, 
+         open_to_low_gap, open_to_close_gap, daily_range, trading_volume, 
          prev_volume, prev_trading_value, tradable_shares 
   FROM log_scores
   
-  -- ボラティリティ（重複を避けるためDISTINCT）
+  -- 方向性（分離版）
   UNION ALL
-  SELECT DISTINCT signal_date, stock_code, stock_name, original_trade_type, 'VOL3P', log_score_vol3p,
+  SELECT signal_date, stock_code, stock_name, 'UP_DIRECTION', log_score_up_direction,
          prev_close, day_open, day_high, day_low, day_close, prev_close_to_open_gap, open_to_high_gap, 
-         open_to_low_gap, open_to_close_gap, daily_range, baseline_profit_rate, is_win, trading_volume, 
+         open_to_low_gap, open_to_close_gap, daily_range, trading_volume, 
          prev_volume, prev_trading_value, tradable_shares 
   FROM log_scores
   UNION ALL
-  SELECT DISTINCT signal_date, stock_code, stock_name, original_trade_type, 'VOL5P', log_score_vol5p,
+  SELECT signal_date, stock_code, stock_name, 'DOWN_DIRECTION', log_score_down_direction,
          prev_close, day_open, day_high, day_low, day_close, prev_close_to_open_gap, open_to_high_gap, 
-         open_to_low_gap, open_to_close_gap, daily_range, baseline_profit_rate, is_win, trading_volume, 
+         open_to_low_gap, open_to_close_gap, daily_range, trading_volume, 
+         prev_volume, prev_trading_value, tradable_shares 
+  FROM log_scores
+  
+  -- ボラティリティ
+  UNION ALL
+  SELECT signal_date, stock_code, stock_name, 'VOL3P', log_score_vol3p,
+         prev_close, day_open, day_high, day_low, day_close, prev_close_to_open_gap, open_to_high_gap, 
+         open_to_low_gap, open_to_close_gap, daily_range, trading_volume, 
+         prev_volume, prev_trading_value, tradable_shares 
+  FROM log_scores
+  UNION ALL
+  SELECT signal_date, stock_code, stock_name, 'VOL5P', log_score_vol5p,
+         prev_close, day_open, day_high, day_low, day_close, prev_close_to_open_gap, open_to_high_gap, 
+         open_to_low_gap, open_to_close_gap, daily_range, trading_volume, 
          prev_volume, prev_trading_value, tradable_shares 
   FROM log_scores
 ),
@@ -222,11 +227,11 @@ unpivoted_scores AS (
 scores_with_bins AS (
   SELECT 
     s.*,
-    -- M20_score_binsからbinを決定（15種類版）
+    -- M20_score_binsからbinを決定（16種類版）
     COALESCE(
       (SELECT MAX(sb.score_bin) 
        FROM `kabu-376213.kabu2411.M20_score_bins` sb
-       WHERE sb.score_type = s.score_type  -- H3P_BUYではなくH3P
+       WHERE sb.score_type = s.score_type
          AND s.score_value > sb.lower_bound 
          AND s.score_value <= sb.upper_bound), 
       1
@@ -237,7 +242,7 @@ scores_with_bins AS (
 -- 5. 最終結果（各スコアに対してBUY/SELL両方の戦略を生成）
 SELECT 
   signal_date,
-  score_type,  -- 15種類（H3P, L3P等）
+  score_type,  -- 16種類
   score_bin,
   strategy_type as trade_type,  -- 戦略としてのBUY/SELL
   stock_code,
@@ -280,9 +285,9 @@ CROSS JOIN UNNEST(['BUY', 'SELL']) as strategy_type;  -- 各スコアに対し�
 
 -- 総レコード数確認
 SELECT 
-  '✅ D30_trading_scores 修正版投入完了' as status,
+  '✅ D30_trading_scores 16指標版投入完了' as status,
   COUNT(*) as total_records,
-  COUNT(DISTINCT score_type) as score_types_should_be_15,
+  COUNT(DISTINCT score_type) as score_types_should_be_16,
   COUNT(DISTINCT stock_code) as stock_count,
   COUNT(DISTINCT trade_type) as trade_types,
   MIN(signal_date) as min_date,
@@ -304,15 +309,40 @@ WHERE signal_date = (SELECT MAX(signal_date) FROM `kabu-376213.kabu2411.D30_trad
 GROUP BY score_type
 ORDER BY score_type;
 
--- 戦略別パフォーマンス確認（サンプル）
+-- 方向性指標の確認
 SELECT 
-  '📈 戦略別パフォーマンス（H3P例）' as check_type,
+  '🔍 方向性指標の分離確認' as check_type,
   score_type,
   trade_type,
-  COUNT(*) as trades,
-  ROUND(AVG(CASE WHEN is_win THEN 1.0 ELSE 0.0 END) * 100, 1) as win_rate_pct,
-  ROUND(AVG(baseline_profit_rate), 3) as avg_profit_rate
+  COUNT(*) as record_count,
+  ROUND(AVG(score_value), 4) as avg_score,
+  COUNT(DISTINCT score_bin) as bins_used
 FROM `kabu-376213.kabu2411.D30_trading_scores`
-WHERE score_type = 'H3P'
-  AND signal_date >= DATE_SUB((SELECT MAX(signal_date) FROM `kabu-376213.kabu2411.D30_trading_scores`), INTERVAL 30 DAY)
-GROUP BY score_type, trade_type;
+WHERE score_type IN ('UP_DIRECTION', 'DOWN_DIRECTION')
+  AND signal_date = (SELECT MAX(signal_date) FROM `kabu-376213.kabu2411.D30_trading_scores`)
+GROUP BY score_type, trade_type
+ORDER BY score_type, trade_type;
+
+-- 16指標の実装確認
+WITH expected_scores AS (
+  SELECT score FROM UNNEST([
+    'H3P', 'H1P', 'L3P', 'L1P',
+    'CU3P', 'CU1P', 'CD3P', 'CD1P',
+    'UD75P', 'DD75P', 'UC3P', 'DC3P',
+    'UP_DIRECTION', 'DOWN_DIRECTION',
+    'VOL3P', 'VOL5P'
+  ]) as score
+)
+SELECT 
+  '🎯 16指標の実装状況' as check_type,
+  es.score as expected_score,
+  CASE WHEN COUNT(d.score_type) > 0 THEN '✅' ELSE '❌' END as status,
+  COUNT(d.score_type) as records_on_latest_date
+FROM expected_scores es
+LEFT JOIN (
+  SELECT DISTINCT score_type 
+  FROM `kabu-376213.kabu2411.D30_trading_scores`
+  WHERE signal_date = (SELECT MAX(signal_date) FROM `kabu-376213.kabu2411.D30_trading_scores`)
+) d ON es.score = d.score_type
+GROUP BY es.score
+ORDER BY es.score;
